@@ -173,6 +173,23 @@
     right: var(--safe-area-inset-right);
     bottom: 0;
   }
+
+  /* Mobile App mode (uni-app WebView) - use dynamic viewport height */
+  .mobile-app-mode #root {
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+  }
+
+  .mobile-app-mode .fixed.inset-0 {
+    height: 100dvh;
+    min-height: 100dvh;
+  }
+
+  /* Ensure mobile nav is visible in mobile app mode */
+  .mobile-app-mode .pb-mobile-nav {
+    padding-bottom: var(--mobile-nav-total) !important;
+  }
   
   /* Global transition defaults */
   button, 

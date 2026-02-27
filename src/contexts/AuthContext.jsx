@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { api } from '../utils/api';
 import { IS_PLATFORM } from '../constants/config';
+import { isMobileAppMode, saveAuth as mobileSaveAuth, logout as mobileLogout, onMessage } from '../utils/mobileBridge';
 
 const AuthContext = createContext({
   user: null,
@@ -41,6 +42,17 @@ export const AuthProvider = ({ children }) => {
     }
 
     checkAuthStatus();
+
+    // Listen for mobile bridge messages
+    if (isMobileAppMode()) {
+      const unsubscribe = onMessage((message) => {
+        if (message.type === 'LOGOUT_COMPLETE') {
+          setToken(null);
+          setUser(null);
+        }
+      });
+      return unsubscribe;
+    }
   }, []);
 
   const checkOnboardingStatus = async () => {
@@ -117,6 +129,12 @@ export const AuthProvider = ({ children }) => {
         setToken(data.token);
         setUser(data.user);
         localStorage.setItem('auth-token', data.token);
+
+        // Notify mobile app about successful login
+        if (isMobileAppMode()) {
+          mobileSaveAuth(data.token, data.user);
+        }
+
         return { success: true };
       } else {
         setError(data.error || 'Login failed');
@@ -142,6 +160,12 @@ export const AuthProvider = ({ children }) => {
         setUser(data.user);
         setNeedsSetup(false);
         localStorage.setItem('auth-token', data.token);
+
+        // Notify mobile app about successful registration
+        if (isMobileAppMode()) {
+          mobileSaveAuth(data.token, data.user);
+        }
+
         return { success: true };
       } else {
         setError(data.error || 'Registration failed');
@@ -159,7 +183,12 @@ export const AuthProvider = ({ children }) => {
     setToken(null);
     setUser(null);
     localStorage.removeItem('auth-token');
-    
+
+    // Notify mobile app about logout
+    if (isMobileAppMode()) {
+      mobileLogout();
+    }
+
     // Optional: Call logout endpoint for logging
     if (token) {
       api.auth.logout().catch(error => {

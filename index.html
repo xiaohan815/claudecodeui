@@ -6,25 +6,61 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>CloudCLI UI</title>
-    
+
     <!-- PWA Manifest -->
     <link rel="manifest" href="/manifest.json" />
-    
+
     <!-- iOS Safari PWA Meta Tags -->
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Claude UI" />
-    
+
     <!-- iOS Safari Icons -->
     <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152x152.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-192x192.png" />
-    
+
     <!-- Theme Color -->
     <meta name="theme-color" content="#ffffff" />
     <meta name="msapplication-TileColor" content="#ffffff" />
-    
+
     <!-- Prevent zoom on iOS -->
     <meta name="format-detection" content="telephone=no" />
+
+    <!-- Mobile App Detection Script -->
+    <script>
+      // Check if running in mobile app (via URL param or user agent)
+      (function() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const isMobileApp = urlParams.get('mobile') === 'true';
+
+        if (isMobileApp) {
+          // Set a global flag for mobile app mode
+          window.__MOBILE_APP__ = true;
+
+          // Add class to body for CSS styling
+          document.documentElement.classList.add('mobile-app-mode');
+
+          // Handle token from URL (passed from native app)
+          const token = urlParams.get('token');
+          if (token) {
+            try {
+              localStorage.setItem('auth-token', token);
+              console.log('[Mobile] Token stored from URL parameter');
+            } catch (e) {
+              console.error('[Mobile] Failed to store token:', e);
+            }
+          }
+
+          // Clean up URL (remove sensitive params)
+          const cleanUrl = new URL(window.location.href);
+          cleanUrl.searchParams.delete('token');
+          if (cleanUrl.searchParams.get('mobile') === 'true') {
+            // Keep mobile flag for styling purposes
+          }
+          window.history.replaceState({}, document.title, cleanUrl.toString());
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

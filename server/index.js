@@ -317,7 +317,53 @@ const wss = new WebSocketServer({
 // Make WebSocket server available to routes
 app.locals.wss = wss;
 
-app.use(cors());
+// CORS configuration - support mobile apps and various origins
+const corsOptions = {
+    origin: (origin, callback) => {
+        // Allow requests with no origin (mobile apps, native apps, curl, etc.)
+        if (!origin) {
+            return callback(null, true);
+        }
+
+        // Allow all localhost and local network origins
+        const allowedPatterns = [
+            /^http:\/\/localhost(:\d+)?$/,
+            /^https:\/\/localhost(:\d+)?$/,
+            /^http:\/\/127\.0\.0\.1(:\d+)?$/,
+            /^https:\/\/127\.0\.0\.1(:\d+)?$/,
+            /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$/,
+            /^https:\/\/192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$/,
+            /^http:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$/,
+            /^https:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$/,
+            /^http:\/\/172\.(1[6-9]|2[0-9]|3[0-1])\.\d{1,3}\.\d{1,3}(:\d+)?$/,
+            /^https:\/\/172\.(1[6-9]|2[0-9]|3[0-1])\.\d{1,3}\.\d{1,3}(:\d+)?$/,
+            // Allow file:// protocol for some mobile scenarios
+            /^file:\/\//,
+            // Allow custom app schemes
+            /^claudecodeui:\/\//,
+            /^uni-app:\/\//,
+        ];
+
+        const isAllowed = allowedPatterns.some(pattern => pattern.test(origin));
+
+        if (isAllowed) {
+            callback(null, true);
+        } else {
+            // In development, allow all origins
+            if (process.env.NODE_ENV !== 'production') {
+                callback(null, true);
+            } else {
+                console.log(`[CORS] Blocked origin: ${origin}`);
+                callback(null, false);
+            }
+        }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key']
+};
+
+app.use(cors(corsOptions));
 app.use(express.json({
   limit: '50mb',
   type: (req) => {
