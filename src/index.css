@@ -554,6 +554,7 @@
 }
 
 /* Mobile optimizations and components */
+@layer components {
   /* Mobile touch optimization and safe areas */
   @media (max-width: 768px) {
     * {
@@ -586,36 +587,26 @@
     
     /* Better mobile touch targets */
     .mobile-touch-target {
-      min-height: 44px;
-      min-width: 44px;
+      @apply min-h-[44px] min-w-[44px];
     }
     
     /* Chat message improvements */
     .chat-message.user {
-      justify-content: flex-end;
+      @apply justify-end;
     }
     
     .chat-message.user > div {
-      max-width: 85%;
+      @apply max-w-[85%];
     }
     
     .chat-message.assistant > div,
     .chat-message.error > div {
-      width: 100%;
-    }
-
-    @media (min-width: 640px) {
-      .chat-message.assistant > div,
-      .chat-message.error > div {
-        max-width: 95%;
-      }
+      @apply w-full sm:max-w-[95%];
     }
     
     /* Session name truncation on mobile */
     .session-name-mobile {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      @apply truncate;
       max-width: calc(100vw - 120px); /* Account for sidebar padding and buttons */
     }
     
@@ -643,16 +634,18 @@
       opacity: 1 !important;
     }
     
-    .group-hover\:opacity-100 {
-      opacity: 1 !important;
-    }
-    
-    .hover\:bg-gray-50:hover,
-    .hover\:bg-gray-100:hover,
-    .hover\:bg-red-200:hover,
-    .dark\:hover\:bg-gray-700:hover,
-    .dark\:hover\:bg-red-900\/50:hover {
-      background-color: inherit;
+    @media (hover: none) and (pointer: coarse) {
+      .group-hover\:opacity-100 {
+        opacity: 1 !important;
+      }
+      
+      .hover\:bg-gray-50:hover,
+      .hover\:bg-gray-100:hover,
+      .hover\:bg-red-200:hover,
+      .dark\:hover\:bg-gray-700:hover,
+      .dark\:hover\:bg-red-900\/50:hover {
+        background-color: inherit;
+      }
     }
   }
   
@@ -760,6 +753,8 @@
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
+}
+
 /* Hide markdown backticks in prose content */
 .prose code::before,
 .prose code::after {

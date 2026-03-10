@@ -1427,6 +1427,8 @@ class WebSocketWriter {
         if (this.ws.readyState === 1) { // WebSocket.OPEN
             // Providers send raw objects, we stringify for WebSocket
             this.ws.send(JSON.stringify(data));
+        } else {
+            console.warn(`[WARN] WebSocket not open (state: ${this.ws.readyState}), message dropped:`, data?.type || 'unknown');
         }
     }
 
