@@ -16,6 +16,9 @@ type PendingViewSession = {
   startedAt: number;
 };
 
+const STREAM_INACTIVITY_TIMEOUT_MS = 60_000;
+const STREAM_WATCHDOG_POLL_MS = 5_000;
+
 function ChatInterface({
   selectedProject,
   selectedSession,
@@ -46,6 +49,8 @@ function ChatInterface({
   const streamBufferRef = useRef('');
   const streamTimerRef = useRef<number | null>(null);
   const pendingViewSessionRef = useRef<PendingViewSession | null>(null);
+  const lastStreamActivityAtRef = useRef<number>(Date.now());
+  const lastStreamProbeAtRef = useRef<number>(0);
 
   const resetStreamingState = useCallback(() => {
     if (streamTimerRef.current) {
@@ -240,6 +245,70 @@ function ChatInterface({
       document.removeEventListener('keydown', handleGlobalEscape, { capture: true });
     };
   }, [canAbortSession, handleAbortSession, isLoading]);
+
+  useEffect(() => {
+    if (!isLoading || !canAbortSession || !latestMessage) {
+      return;
+    }
+
+    const activeSessionId = selectedSession?.id || currentSessionId;
+    if (activeSessionId && latestMessage.sessionId && latestMessage.sessionId !== activeSessionId) {
+      return;
+    }
+
+    lastStreamActivityAtRef.current = Date.now();
+  }, [canAbortSession, currentSessionId, isLoading, latestMessage, selectedSession?.id]);
+
+  useEffect(() => {
+    if (isLoading && canAbortSession) {
+      lastStreamActivityAtRef.current = Date.now();
+      lastStreamProbeAtRef.current = 0;
+    }
+  }, [canAbortSession, isLoading]);
+
+  useEffect(() => {
+    if (!isLoading || !canAbortSession) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      const probeSessionId = selectedSession?.id || currentSessionId;
+      if (!probeSessionId) {
+        return;
+      }
+
+      const now = Date.now();
+      const inactiveFor = now - lastStreamActivityAtRef.current;
+      const sinceLastProbe = now - lastStreamProbeAtRef.current;
+      if (inactiveFor < STREAM_INACTIVITY_TIMEOUT_MS || sinceLastProbe < STREAM_INACTIVITY_TIMEOUT_MS) {
+        return;
+      }
+
+      const probeProvider: Provider =
+        selectedSession?.__provider ||
+        provider ||
+        ((localStorage.getItem('selected-provider') as Provider | null) || 'claude');
+
+      sendMessage({
+        type: 'check-session-status',
+        sessionId: probeSessionId,
+        provider: probeProvider,
+      });
+      lastStreamProbeAtRef.current = now;
+    }, STREAM_WATCHDOG_POLL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [
+    canAbortSession,
+    currentSessionId,
+    isLoading,
+    provider,
+    selectedSession?.__provider,
+    selectedSession?.id,
+    sendMessage,
+  ]);
 
   useEffect(() => {
     return () => {

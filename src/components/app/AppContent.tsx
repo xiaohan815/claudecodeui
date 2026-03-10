@@ -81,12 +81,20 @@ export default function AppContent() {
     }
 
     if (isConnected && selectedSession?.id) {
+      const provider = selectedSession.__provider || (localStorage.getItem('selected-provider') || 'claude');
+
       sendMessage({
         type: 'get-pending-permissions',
         sessionId: selectedSession.id
       });
+
+      sendMessage({
+        type: 'check-session-status',
+        sessionId: selectedSession.id,
+        provider,
+      });
     }
-  }, [isConnected, selectedSession?.id, sendMessage]);
+  }, [isConnected, selectedSession?.id, selectedSession?.__provider, sendMessage]);
 
   return (
     <div className="fixed inset-0 flex bg-background">
