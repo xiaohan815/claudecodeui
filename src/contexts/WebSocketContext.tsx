@@ -85,6 +85,9 @@ const useWebSocketProviderState = (): WebSocketContextType => {
   }, []);
 
   useEffect(() => {
+    // Reset unmounted flag when effect re-runs (e.g. token change)
+    unmountedRef.current = false;
+
     // Close existing connection before creating new one
     if (wsRef.current) {
       console.log('[WS] Closing existing connection due to token change');
