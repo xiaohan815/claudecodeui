@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { PermissionMode, Provider } from '../../types/types';
 import ThinkingModeSelector from './ThinkingModeSelector';
 import TokenUsagePie from './TokenUsagePie';
+import WebSocketStatus from './WebSocketStatus';
 
 interface ChatInputControlsProps {
   permissionMode: PermissionMode | string;
@@ -39,6 +40,8 @@ export default function ChatInputControls({
 
   return (
     <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3">
+      <WebSocketStatus />
+
       <button
         type="button"
         onClick={onModeSwitch}

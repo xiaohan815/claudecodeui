@@ -5,6 +5,10 @@ import { IS_PLATFORM } from '../constants/config.js';
 // Use env var if set, otherwise auto-generate a unique secret per installation
 const JWT_SECRET = process.env.JWT_SECRET || appConfigDb.getOrCreateJwtSecret();
 
+// Debug: log which JWT secret source is being used
+console.log('[AUTH] JWT_SECRET source:', process.env.JWT_SECRET ? 'environment variable' : 'database');
+console.log('[AUTH] JWT_SECRET (first 10 chars):', JWT_SECRET.substring(0, 10) + '...');
+
 // Optional API key middleware
 const validateApiKey = (req, res, next) => {
   // Skip API key validation if not configured

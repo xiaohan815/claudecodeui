@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../components/auth/context/AuthContext';
+import { AUTH_TOKEN_STORAGE_KEY } from '../components/auth/constants';
 import { IS_PLATFORM } from '../constants/config';
 
 type WebSocketContextType = {
@@ -34,31 +35,19 @@ const useWebSocketProviderState = (): WebSocketContextType => {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const { token } = useAuth();
 
-  useEffect(() => {
-    connect();
-    
-    return () => {
-      unmountedRef.current = true;
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-    };
-  }, [token]); // everytime token changes, we reconnect
-
-  const connect = useCallback(() => {
+  const connect = useCallback((currentToken: string | null) => {
     if (unmountedRef.current) return; // Prevent connection if unmounted
     try {
       // Construct WebSocket URL
-      const wsUrl = buildWebSocketUrl(token);
+      const wsUrl = buildWebSocketUrl(currentToken);
 
       if (!wsUrl) return console.warn('No authentication token found for WebSocket connection');
       
+      console.log('[WS] Connecting with token:', currentToken?.substring(0, 30) + '...');
       const websocket = new WebSocket(wsUrl);
 
       websocket.onopen = () => {
+        console.log('[WS] Connected successfully');
         setIsConnected(true);
         wsRef.current = websocket;
       };
@@ -73,13 +62,16 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       };
 
       websocket.onclose = () => {
+        console.log('[WS] Connection closed');
         setIsConnected(false);
         wsRef.current = null;
         
         // Attempt to reconnect after 3 seconds
         reconnectTimeoutRef.current = setTimeout(() => {
           if (unmountedRef.current) return; // Prevent reconnection if unmounted
-          connect();
+          // Use the latest token from localStorage for reconnection
+          const latestToken = localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+          connect(latestToken);
         }, 3000);
       };
 
@@ -90,7 +82,37 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     } catch (error) {
       console.error('Error creating WebSocket connection:', error);
     }
-  }, [token]); // everytime token changes, we reconnect
+  }, []);
+
+  useEffect(() => {
+    // Close existing connection before creating new one
+    if (wsRef.current) {
+      console.log('[WS] Closing existing connection due to token change');
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    
+    // Clear any pending reconnect
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    // Only connect if we have a token
+    if (token) {
+      connect(token);
+    }
+    
+    return () => {
+      unmountedRef.current = true;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [token, connect]); // reconnect when token changes
 
   const sendMessage = useCallback((message: any) => {
     const socket = wsRef.current;

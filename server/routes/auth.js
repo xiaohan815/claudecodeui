@@ -103,6 +103,10 @@ router.post('/login', async (req, res) => {
     // Generate token
     const token = generateToken(user);
     
+    // Debug: log generated token info
+    console.log('[AUTH] Login - Generated new token for user:', user.username);
+    console.log('[AUTH] Login - Token (first 50 chars):', token.substring(0, 50) + '...');
+    
     // Update last login
     userDb.updateLastLogin(user.id);
     

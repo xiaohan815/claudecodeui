@@ -289,7 +289,8 @@ function shouldAutoOpenUrlFromOutput(value = '') {
 const wss = new WebSocketServer({
     server,
     verifyClient: (info) => {
-        console.log('WebSocket connection attempt to:', info.req.url);
+        const clientIp = info.req.headers['x-forwarded-for'] || info.req.socket.remoteAddress;
+        console.log('WebSocket connection attempt from:', clientIp, 'to:', info.req.url);
 
         // Platform mode: always allow connection
         if (IS_PLATFORM) {
