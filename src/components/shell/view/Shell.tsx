@@ -19,6 +19,12 @@ import ShellHeader from './subcomponents/ShellHeader';
 import ShellMinimalView from './subcomponents/ShellMinimalView';
 import TerminalShortcutsPanel from './subcomponents/TerminalShortcutsPanel';
 
+// Detect iOS Safari — xterm.js canvas cannot receive soft keyboard input on iOS
+const isIOS = () =>
+  typeof navigator !== 'undefined' &&
+  (/iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+
 type CliPromptOption = { number: string; label: string };
 
 type ShellProps = {
@@ -47,6 +53,8 @@ export default function Shell({
   const [cliPromptOptions, setCliPromptOptions] = useState<CliPromptOption[] | null>(null);
   const promptCheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onOutputRef = useRef<(() => void) | null>(null);
+  const iosInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const iosDevice = useRef(isIOS()).current;
 
   const {
     terminalContainerRef,
@@ -160,7 +168,12 @@ export default function Shell({
     }
 
     const focusTerminal = () => {
-      terminalRef.current?.focus();
+      if (iosDevice && iosInputRef.current) {
+        // On iOS, focus the overlay textarea so the soft keyboard can appear on tap
+        iosInputRef.current.focus({ preventScroll: true });
+      } else {
+        terminalRef.current?.focus();
+      }
     };
 
     const animationFrameId = window.requestAnimationFrame(focusTerminal);
@@ -170,11 +183,40 @@ export default function Shell({
       window.cancelAnimationFrame(animationFrameId);
       window.clearTimeout(timeoutId);
     };
-  }, [isActive, isConnected, isInitialized, terminalRef]);
+  }, [isActive, isConnected, isInitialized, terminalRef, iosDevice]);
 
   const sendInput = useCallback(
     (data: string) => {
       sendSocketMessage(wsRef.current, { type: 'input', data });
+    },
+    [wsRef],
+  );
+
+  // iOS: handle textarea input and forward to terminal
+  const handleIOSInput = useCallback(
+    (e: React.FormEvent<HTMLTextAreaElement>) => {
+      const ta = e.currentTarget;
+      const value = ta.value;
+      if (value) {
+        sendSocketMessage(wsRef.current, { type: 'input', data: value });
+        ta.value = '';
+      }
+    },
+    [wsRef],
+  );
+
+  // iOS: intercept Enter key to send \r instead of newline
+  const handleIOSKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        sendSocketMessage(wsRef.current, { type: 'input', data: '\r' });
+        e.currentTarget.value = '';
+      } else if (e.key === 'Backspace') {
+        e.preventDefault();
+        sendSocketMessage(wsRef.current, { type: 'input', data: '\x7f' });
+        e.currentTarget.value = '';
+      }
     },
     [wsRef],
   );
@@ -264,6 +306,37 @@ export default function Shell({
           className="h-full w-full focus:outline-none"
           style={{ outline: 'none' }}
         />
+
+        {/* iOS soft keyboard input overlay — xterm canvas cannot receive IME/touch input on iOS */}
+        {iosDevice && isConnected && (
+          <textarea
+            ref={iosInputRef}
+            aria-label="terminal input"
+            autoCapitalize="none"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            onInput={handleIOSInput}
+            onKeyDown={handleIOSKeyDown}
+            style={{
+              position: 'absolute',
+              bottom: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+              opacity: 0,
+              zIndex: 10,
+              resize: 'none',
+              background: 'transparent',
+              color: 'transparent',
+              caretColor: 'transparent',
+              border: 'none',
+              outline: 'none',
+              padding: 0,
+              fontSize: '16px', // prevent iOS auto-zoom
+            }}
+          />
+        )}
 
         {overlayMode && (
           <ShellConnectionOverlay
