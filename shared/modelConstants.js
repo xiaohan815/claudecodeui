@@ -28,28 +28,41 @@ export const CLAUDE_MODELS = {
  */
 export const CURSOR_MODELS = {
   OPTIONS: [
+    // Claude 4.6 Models
+    { value: "sonnet-4.6", label: "Claude 4.6 Sonnet" },
+    { value: "sonnet-4.6-thinking", label: "Claude 4.6 Sonnet (Thinking)" },
+    { value: "opus-4.6", label: "Claude 4.6 Opus" },
     { value: "opus-4.6-thinking", label: "Claude 4.6 Opus (Thinking)" },
-    { value: "gpt-5.3-codex", label: "GPT-5.3" },
+    // GPT Models
+    { value: "gpt-5.4", label: "GPT-5.4" },
+    { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
+    { value: "gpt-5.3", label: "GPT-5.3" },
     { value: "gpt-5.2-high", label: "GPT-5.2 High" },
-    { value: "gemini-3-pro", label: "Gemini 3 Pro" },
-    { value: "opus-4.5-thinking", label: "Claude 4.5 Opus (Thinking)" },
     { value: "gpt-5.2", label: "GPT-5.2" },
     { value: "gpt-5.1", label: "GPT-5.1" },
     { value: "gpt-5.1-high", label: "GPT-5.1 High" },
-    { value: "composer-1", label: "Composer 1" },
-    { value: "auto", label: "Auto" },
+    // Claude 4.5 Models
     { value: "sonnet-4.5", label: "Claude 4.5 Sonnet" },
     { value: "sonnet-4.5-thinking", label: "Claude 4.5 Sonnet (Thinking)" },
     { value: "opus-4.5", label: "Claude 4.5 Opus" },
+    { value: "opus-4.5-thinking", label: "Claude 4.5 Opus (Thinking)" },
+    // Claude 4.1 Models
+    { value: "opus-4.1", label: "Claude 4.1 Opus" },
+    // Codex Models
     { value: "gpt-5.1-codex", label: "GPT-5.1 Codex" },
     { value: "gpt-5.1-codex-high", label: "GPT-5.1 Codex High" },
     { value: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max" },
     { value: "gpt-5.1-codex-max-high", label: "GPT-5.1 Codex Max High" },
-    { value: "opus-4.1", label: "Claude 4.1 Opus" },
+    // Gemini Models
+    { value: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
+    { value: "gemini-3-pro", label: "Gemini 3 Pro" },
+    // Other
+    { value: "composer-1", label: "Composer 1" },
     { value: "grok", label: "Grok" },
+    { value: "auto", label: "Auto" },
   ],
 
-  DEFAULT: "gpt-5-3-codex",
+  DEFAULT: "gpt-5.3-codex",
 };
 
 /**

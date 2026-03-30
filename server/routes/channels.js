@@ -7,6 +7,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs/promises";
+import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import os from "os";
 import { authenticateToken } from "../middleware/auth.js";
@@ -36,8 +37,101 @@ import {
   uninstallPlugin,
   getPluginsDir,
 } from "../utils/plugin-loader.js";
+import {
+  CLAUDE_MODELS,
+  CURSOR_MODELS,
+  CODEX_MODELS,
+  GEMINI_MODELS,
+} from "../../shared/modelConstants.js";
 
 const router = express.Router();
+const VALID_PROVIDERS = ["claude", "cursor", "codex", "gemini"];
+const VALID_CHAT_TYPES = ["p2p", "group"];
+
+function isFeishuChannel(channelName) {
+  return channelName === "feishu-channel";
+}
+
+function normalizeAllowedChatTypes(value) {
+  if (!Array.isArray(value)) {
+    return ["p2p"];
+  }
+
+  const normalized = value.filter((item) => VALID_CHAT_TYPES.includes(item));
+  return normalized.length > 0 ? normalized : ["p2p"];
+}
+
+function buildChannelPrompt(message, images, provider) {
+  const trimmedMessage = typeof message === "string" ? message.trim() : "";
+  let prompt = trimmedMessage;
+
+  if (!prompt && images.length > 0) {
+    prompt =
+      "User sent an image without any text. Please inspect the image and reply appropriately.";
+  }
+
+  if (images.length > 0 && provider !== "claude") {
+    prompt += `\n\n[User also sent ${images.length} image(s). This channel currently passes image input directly only when the provider is Claude.]`;
+  }
+
+  return prompt;
+}
+
+function installDependencies(cwd) {
+  return new Promise((resolve, reject) => {
+    const npmProcess = spawn("npm", ["install", "--production", "--ignore-scripts"], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stderr = "";
+    npmProcess.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    npmProcess.on("close", (code) => {
+      if (code !== 0) {
+        reject(
+          new Error(
+            `npm install failed in ${cwd}${stderr ? `: ${stderr.trim()}` : ""}`,
+          ),
+        );
+        return;
+      }
+      resolve(true);
+    });
+
+    npmProcess.on("error", (error) => {
+      reject(error);
+    });
+  });
+}
+
+/**
+ * Get available models for all providers
+ * GET /api/channels/models
+ */
+router.get("/models", authenticateToken, async (req, res) => {
+  try {
+    res.json({
+      models: {
+        claude: CLAUDE_MODELS.OPTIONS,
+        cursor: CURSOR_MODELS.OPTIONS,
+        codex: CODEX_MODELS.OPTIONS,
+        gemini: GEMINI_MODELS.OPTIONS,
+      },
+      defaults: {
+        claude: CLAUDE_MODELS.DEFAULT,
+        cursor: CURSOR_MODELS.DEFAULT,
+        codex: CODEX_MODELS.DEFAULT,
+        gemini: GEMINI_MODELS.DEFAULT,
+      },
+    });
+  } catch (error) {
+    console.error("[Channels] Error getting models:", error);
+    res.status(500).json({ error: "Failed to get models" });
+  }
+});
 
 /**
  * List all channels
@@ -148,6 +242,15 @@ router.post("/install", authenticateToken, async (req, res) => {
       };
 
       await copyRecursive(resolvedPath, targetDir);
+      try {
+        await fs.access(path.join(targetDir, "package.json"));
+        await installDependencies(targetDir);
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
+          await fs.rm(targetDir, { recursive: true, force: true });
+          throw error;
+        }
+      }
       manifest = localManifest;
     } else if (url.match(/^https?:\/\//) || url.match(/^[\w-]+\/[\w-]+$/)) {
       // Git URL installation
@@ -327,31 +430,91 @@ router.get("/:name/config", authenticateToken, async (req, res) => {
 router.post("/:name/config", authenticateToken, async (req, res) => {
   try {
     const { name } = req.params;
-    const { cwd, provider, model } = req.body;
+    const { cwd, provider, model, appId, appSecret, domain, botName, allowedChatTypes } = req.body;
 
     const channel = getChannel(name);
     if (!channel) {
       return res.status(404).json({ error: "Channel not found" });
     }
 
-    const VALID_PROVIDERS = ["claude", "cursor", "codex", "gemini"];
     if (provider && !VALID_PROVIDERS.includes(provider)) {
       return res.status(400).json({
         error: `provider must be one of: ${VALID_PROVIDERS.join(", ")}`,
       });
     }
 
+    if (allowedChatTypes !== undefined) {
+      if (
+        !Array.isArray(allowedChatTypes) ||
+        allowedChatTypes.some((item) => !VALID_CHAT_TYPES.includes(item))
+      ) {
+        return res.status(400).json({
+          error: `allowedChatTypes must only contain: ${VALID_CHAT_TYPES.join(", ")}`,
+        });
+      }
+    }
+
     // Check if cwd or provider changed — if so, clear old sessions so the
     // next message starts fresh in the new directory / with the new provider.
-    const oldConfig = channelConfigDb.getConfig(name);
-    const cwdChanged = cwd && cwd !== oldConfig.cwd;
-    const providerChanged = provider && provider !== oldConfig.provider;
+    const oldConfig = channelConfigDb.getConfig(name, { includeSecrets: true });
+    const cwdChanged = cwd !== undefined && cwd !== oldConfig.cwd;
+    const providerChanged = provider !== undefined && provider !== oldConfig.provider;
+    const nextFeishuConfig = {
+      appId:
+        appId === undefined ? oldConfig.appId : String(appId || "").trim(),
+      appSecret:
+        appSecret === undefined
+          ? oldConfig.appSecret
+          : String(appSecret || "").trim(),
+      domain:
+        domain === undefined
+          ? oldConfig.domain
+          : String(domain || "").trim().toLowerCase() || "feishu",
+      botName:
+        botName === undefined ? oldConfig.botName : String(botName || "").trim(),
+      allowedChatTypes:
+        allowedChatTypes === undefined
+          ? oldConfig.allowedChatTypes
+          : normalizeAllowedChatTypes(allowedChatTypes),
+    };
+    const feishuConfigChanged =
+      isFeishuChannel(name) &&
+      (
+        nextFeishuConfig.appId !== oldConfig.appId ||
+        nextFeishuConfig.appSecret !== oldConfig.appSecret ||
+        nextFeishuConfig.domain !== oldConfig.domain ||
+        nextFeishuConfig.botName !== oldConfig.botName ||
+        JSON.stringify(nextFeishuConfig.allowedChatTypes) !==
+          JSON.stringify(oldConfig.allowedChatTypes)
+      );
 
-    channelConfigDb.setConfig(name, { cwd, provider, model });
+    channelConfigDb.setConfig(name, {
+      cwd,
+      provider,
+      model,
+      appId: isFeishuChannel(name) ? nextFeishuConfig.appId : undefined,
+      appSecret:
+        isFeishuChannel(name) && appSecret !== undefined
+          ? nextFeishuConfig.appSecret
+          : undefined,
+      domain: isFeishuChannel(name) ? nextFeishuConfig.domain : undefined,
+      botName: isFeishuChannel(name) ? nextFeishuConfig.botName : undefined,
+      allowedChatTypes:
+        isFeishuChannel(name) ? nextFeishuConfig.allowedChatTypes : undefined,
+    });
     console.log(`[Channels] Config updated for ${name}:`, {
       cwd,
       provider,
       model,
+      ...(isFeishuChannel(name)
+        ? {
+            appId: nextFeishuConfig.appId || null,
+            domain: nextFeishuConfig.domain,
+            botName: nextFeishuConfig.botName || null,
+            allowedChatTypes: nextFeishuConfig.allowedChatTypes,
+            hasAppSecret: Boolean(nextFeishuConfig.appSecret),
+          }
+        : {}),
     });
 
     if (cwdChanged || providerChanged) {
@@ -361,7 +524,15 @@ router.post("/:name/config", authenticateToken, async (req, res) => {
       );
     }
 
-    res.json({ success: true, config: channelConfigDb.getConfig(name) });
+    if (feishuConfigChanged && channel.status === "running") {
+      await restartChannel(name);
+    }
+
+    res.json({
+      success: true,
+      restarted: feishuConfigChanged && channel.status === "running",
+      config: channelConfigDb.getConfig(name),
+    });
   } catch (error) {
     console.error("[Channels] Error updating channel config:", error);
     res.status(500).json({ error: "Failed to update channel config" });
@@ -588,16 +759,30 @@ router.post("/message", authenticateToken, async (req, res) => {
     return res.status(403).json({ error: "Channel service token required" });
   }
 
-  const { message, externalChatId, externalSenderId, projectPath } = req.body;
+  const { message, externalChatId, externalSenderId, projectPath, images } = req.body;
 
-  if (!message || typeof message !== "string") {
-    return res.status(400).json({ error: "message is required" });
+  if (message !== undefined && typeof message !== "string") {
+    return res.status(400).json({ error: "message must be a string" });
   }
   if (!externalChatId || typeof externalChatId !== "string") {
     return res.status(400).json({ error: "externalChatId is required" });
   }
+  if (
+    images !== undefined &&
+    (!Array.isArray(images) ||
+      images.some(
+        (image) =>
+          !image ||
+          typeof image !== "object" ||
+          typeof image.data !== "string" ||
+          !image.data.startsWith("data:"),
+      ))
+  ) {
+    return res.status(400).json({ error: "images must be an array of data URLs" });
+  }
 
   const channelName = req.channelSource;
+  const normalizedImages = Array.isArray(images) ? images : [];
 
   // Load per-channel config: cwd, provider, model
   const config = channelConfigDb.getConfig(channelName);
@@ -607,6 +792,11 @@ router.post("/message", authenticateToken, async (req, res) => {
   const cwd = config.cwd || projectPath || os.homedir();
   const provider = config.provider || "claude";
   const model = config.model || undefined;
+  const prompt = buildChannelPrompt(message, normalizedImages, provider);
+
+  if (!prompt) {
+    return res.status(400).json({ error: "message or images are required" });
+  }
 
   // Session continuation: only supported for Claude (other providers start fresh)
   const existingSessionId =
@@ -617,18 +807,21 @@ router.post("/message", authenticateToken, async (req, res) => {
   const writer = new ChannelResponseWriter();
 
   console.log(
-    `[ChannelMessage] ${channelName} | provider:${provider} | cwd:${cwd} | chat:${externalChatId} | session:${existingSessionId || "NEW"} | "${message.substring(0, 60)}"`,
+    `[ChannelMessage] ${channelName} | provider:${provider} | cwd:${cwd} | chat:${externalChatId} | session:${existingSessionId || "NEW"} | images:${normalizedImages.length} | "${prompt.substring(0, 60)}"`,
   );
 
   try {
     if (provider === "claude") {
       queryClaudeSDK(
-        message,
+        prompt,
         {
           cwd,
           sessionId: existingSessionId,
           model,
           permissionMode: "bypassPermissions",
+          ...(normalizedImages.length > 0
+            ? { images: normalizedImages }
+            : {}),
           toolsSettings: {
             allowedTools: [],
             disallowedTools: [],
@@ -644,7 +837,7 @@ router.post("/message", authenticateToken, async (req, res) => {
       });
     } else if (provider === "cursor") {
       spawnCursor(
-        message,
+        prompt,
         {
           cwd,
           projectPath: cwd,
@@ -661,7 +854,7 @@ router.post("/message", authenticateToken, async (req, res) => {
       });
     } else if (provider === "codex") {
       queryCodex(
-        message,
+        prompt,
         {
           cwd,
           projectPath: cwd,
@@ -678,7 +871,7 @@ router.post("/message", authenticateToken, async (req, res) => {
       });
     } else if (provider === "gemini") {
       spawnGemini(
-        message,
+        prompt,
         {
           cwd,
           projectPath: cwd,

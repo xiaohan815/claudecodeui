@@ -195,8 +195,25 @@ const runMigrations = () => {
       cwd          TEXT,
       provider     TEXT NOT NULL DEFAULT 'claude',
       model        TEXT,
+      app_id       TEXT,
+      app_secret   TEXT,
+      domain       TEXT,
+      bot_name     TEXT,
+      allowed_chat_types TEXT,
       updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
+    for (const migration of [
+      "ALTER TABLE channel_config ADD COLUMN app_id TEXT",
+      "ALTER TABLE channel_config ADD COLUMN app_secret TEXT",
+      "ALTER TABLE channel_config ADD COLUMN domain TEXT",
+      "ALTER TABLE channel_config ADD COLUMN bot_name TEXT",
+      "ALTER TABLE channel_config ADD COLUMN allowed_chat_types TEXT",
+    ]) {
+      try {
+        db.exec(migration);
+      } catch (e) {
+      }
+    }
 
     console.log("Database migrations completed successfully");
   } catch (error) {
@@ -920,17 +937,36 @@ const channelSessionsDb = {
 
 const channelConfigDb = {
   // Get config for a channel (returns defaults if not set)
-  getConfig: (channelName) => {
+  getConfig: (channelName, options = {}) => {
     try {
       const row = db
         .prepare(
-          "SELECT cwd, provider, model FROM channel_config WHERE channel_name = ?",
+          "SELECT cwd, provider, model, app_id, app_secret, domain, bot_name, allowed_chat_types FROM channel_config WHERE channel_name = ?",
         )
         .get(channelName);
+      const allowedChatTypes = (() => {
+        try {
+          const parsed = JSON.parse(row?.allowed_chat_types || '["p2p"]');
+          if (!Array.isArray(parsed)) return ["p2p"];
+          const normalized = parsed.filter(
+            (value) => value === "p2p" || value === "group",
+          );
+          return normalized.length > 0 ? normalized : ["p2p"];
+        } catch {
+          return ["p2p"];
+        }
+      })();
       return {
         cwd: row?.cwd || null,
         provider: row?.provider || "claude",
         model: row?.model || null,
+        appId: row?.app_id || "",
+        domain: row?.domain || "feishu",
+        botName: row?.bot_name || "",
+        allowedChatTypes,
+        ...(options.includeSecrets
+          ? { appSecret: row?.app_secret || "" }
+          : { hasAppSecret: Boolean(row?.app_secret) }),
       };
     } catch (err) {
       throw err;
@@ -938,20 +974,66 @@ const channelConfigDb = {
   },
 
   // Upsert config for a channel
-  setConfig: (channelName, { cwd, provider, model }) => {
+  setConfig: (
+    channelName,
+    { cwd, provider, model, appId, appSecret, domain, botName, allowedChatTypes },
+  ) => {
     try {
+      const existing = db
+        .prepare(
+          "SELECT app_id, app_secret, domain, bot_name, allowed_chat_types FROM channel_config WHERE channel_name = ?",
+        )
+        .get(channelName);
+      const normalizedAllowedChatTypes = Array.isArray(allowedChatTypes)
+        ? allowedChatTypes.filter(
+            (value) => value === "p2p" || value === "group",
+          )
+        : [];
+      const finalAllowedChatTypes = JSON.stringify(
+        normalizedAllowedChatTypes.length > 0 ? normalizedAllowedChatTypes : ["p2p"],
+      );
+      const finalAppSecret =
+        appSecret === undefined ? existing?.app_secret || null : appSecret || null;
       db.prepare(
         `
-        INSERT INTO channel_config (channel_name, cwd, provider, model, updated_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        INSERT INTO channel_config (
+          channel_name,
+          cwd,
+          provider,
+          model,
+          app_id,
+          app_secret,
+          domain,
+          bot_name,
+          allowed_chat_types,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(channel_name)
         DO UPDATE SET
-          cwd        = excluded.cwd,
-          provider   = excluded.provider,
-          model      = excluded.model,
-          updated_at = CURRENT_TIMESTAMP
+          cwd                = excluded.cwd,
+          provider           = excluded.provider,
+          model              = excluded.model,
+          app_id             = excluded.app_id,
+          app_secret         = excluded.app_secret,
+          domain             = excluded.domain,
+          bot_name           = excluded.bot_name,
+          allowed_chat_types = excluded.allowed_chat_types,
+          updated_at         = CURRENT_TIMESTAMP
       `,
-      ).run(channelName, cwd || null, provider || "claude", model || null);
+      ).run(
+        channelName,
+        cwd || null,
+        provider || "claude",
+        model || null,
+        appId === undefined ? existing?.app_id || null : appId || null,
+        finalAppSecret,
+        domain === undefined ? existing?.domain || "feishu" : domain || "feishu",
+        botName === undefined ? existing?.bot_name || null : botName || null,
+        allowedChatTypes === undefined
+          ? existing?.allowed_chat_types || '["p2p"]'
+          : finalAllowedChatTypes,
+      );
       return true;
     } catch (err) {
       throw err;

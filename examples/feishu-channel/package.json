@@ -1,0 +1,14 @@
+{
+  "name": "claudecodeui-feishu-channel",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Feishu channel for claudecodeui",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.54.0",
+    "@modelcontextprotocol/sdk": "^1.28.0"
+  }
+}

@@ -15,6 +15,7 @@ import { startPluginServer, stopPluginServer } from '../utils/plugin-process-man
 import { getOrCreateChannelServiceToken, initializeSystemUser } from './token-manager.js';
 import { startMCPClient, stopMCPClient, isMCPConnected } from './mcp-manager.js';
 import { gate, AccessPolicy } from './access-control.js';
+import { channelConfigDb } from '../database/db.js';
 
 const CHANNEL_TYPE = 'channel';
 
@@ -105,12 +106,22 @@ export async function startChannel(channelName) {
   try {
     // Get or create service token (reuses existing valid token if available)
     const serviceToken = getOrCreateChannelServiceToken(channelName);
+    const channelConfig = channelConfigDb.getConfig(channelName, {
+      includeSecrets: true,
+    });
 
     // Set environment variables
     const env = {
       CHANNEL_SERVICE_TOKEN: serviceToken,
       CHANNEL_API_ENDPOINT: `http://localhost:${process.env.PORT || 23003}/api`,
-      CHANNEL_NAME: channelName
+      CHANNEL_NAME: channelName,
+      FEISHU_APP_ID: channelConfig.appId || "",
+      FEISHU_APP_SECRET: channelConfig.appSecret || "",
+      FEISHU_DOMAIN: channelConfig.domain || "feishu",
+      FEISHU_BOT_NAME: channelConfig.botName || "",
+      FEISHU_ALLOWED_CHAT_TYPES: JSON.stringify(
+        channelConfig.allowedChatTypes || ["p2p"],
+      ),
     };
 
     // Get plugin info

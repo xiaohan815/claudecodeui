@@ -1,0 +1,12 @@
+{
+  "name": "feishu-channel",
+  "displayName": "Feishu Channel",
+  "version": "0.1.0",
+  "description": "Connect Feishu or Lark bot messages to claudecodeui over long connection mode.",
+  "type": "channel",
+  "entry": "index.js",
+  "server": "server.js",
+  "icon": "MessageSquare",
+  "slot": "tab",
+  "permissions": []
+}

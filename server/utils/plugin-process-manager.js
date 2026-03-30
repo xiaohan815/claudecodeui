@@ -170,6 +170,7 @@ export async function startEnabledPluginServers() {
 
   for (const plugin of plugins) {
     if (!plugin.server) continue;
+    if (plugin.type === 'channel') continue;
     if (config[plugin.name]?.enabled === false) continue;
 
     const pluginDir = getPluginDir(plugin.name);

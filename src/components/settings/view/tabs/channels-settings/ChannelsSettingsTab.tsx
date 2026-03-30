@@ -1,6 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { MessageSquare, Plus, Trash2, Power, PowerOff, RefreshCw, Shield, Users } from 'lucide-react';
+import {
+  MessageSquare,
+  Plus,
+  Trash2,
+  Power,
+  PowerOff,
+  RefreshCw,
+  Shield,
+  Users,
+} from 'lucide-react';
 import { Button } from '../../../../../shared/view/ui';
 import { authenticatedFetch } from '../../../../../utils/api';
 
@@ -21,6 +30,33 @@ interface AccessEntry {
   createdAt: string;
 }
 
+interface ChannelConfigDraft {
+  cwd: string;
+  provider: string;
+  model: string;
+  appId: string;
+  appSecretInput: string;
+  domain: string;
+  botName: string;
+  allowedChatTypes: string[];
+  hasAppSecret: boolean;
+}
+
+const DEFAULT_CONFIG: ChannelConfigDraft = {
+  cwd: '',
+  provider: 'claude',
+  model: '',
+  appId: '',
+  appSecretInput: '',
+  domain: 'feishu',
+  botName: '',
+  allowedChatTypes: ['p2p'],
+  hasAppSecret: false,
+};
+
+const FIELD_CLASS =
+  'w-full rounded-xl border border-border/70 bg-background/70 px-3 py-2.5 text-sm ring-offset-background transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70';
+
 function ChannelsSettingsTab() {
   const { t } = useTranslation('settings');
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -30,27 +66,44 @@ function ChannelsSettingsTab() {
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
   const [accessList, setAccessList] = useState<AccessEntry[]>([]);
   const [newSenderId, setNewSenderId] = useState('');
+  const [configs, setConfigs] = useState<Record<string, ChannelConfigDraft>>({});
+  const [configLoading, setConfigLoading] = useState(false);
+  const [configSaving, setConfigSaving] = useState(false);
+  const [configStatus, setConfigStatus] = useState<string | null>(null);
 
-  // Fetch channels
+  const selectedChannelData = useMemo(
+    () => channels.find((channel) => channel.name === selectedChannel) || null,
+    [channels, selectedChannel],
+  );
+  const selectedConfig = selectedChannel ? configs[selectedChannel] : null;
+  const isFeishuSelected = selectedChannel === 'feishu-channel';
+
   useEffect(() => {
     fetchChannels();
   }, []);
 
-  // Fetch access list when channel is selected
   useEffect(() => {
-    if (selectedChannel) {
-      fetchAccessList(selectedChannel);
+    if (!selectedChannel) {
+      return;
     }
+    fetchAccessList(selectedChannel);
+    fetchChannelConfig(selectedChannel);
   }, [selectedChannel]);
 
   const fetchChannels = async () => {
     try {
       const response = await authenticatedFetch('/api/channels');
       const data = await response.json();
-      setChannels(data.channels || []);
+      const nextChannels = data.channels || [];
+      setChannels(nextChannels);
+      if (!selectedChannel && nextChannels.length > 0) {
+        setSelectedChannel(nextChannels[0].name);
+      }
+      if (selectedChannel && !nextChannels.some((channel: Channel) => channel.name === selectedChannel)) {
+        setSelectedChannel(nextChannels[0]?.name || null);
+      }
     } catch (error) {
       console.error('Failed to fetch channels:', error);
-      console.error('Failed to fetch channels');
     } finally {
       setLoading(false);
     }
@@ -64,6 +117,50 @@ function ChannelsSettingsTab() {
     } catch (error) {
       console.error('Failed to fetch access list:', error);
     }
+  };
+
+  const fetchChannelConfig = async (channelName: string) => {
+    setConfigLoading(true);
+    setConfigStatus(null);
+    try {
+      const response = await authenticatedFetch(`/api/channels/${channelName}/config`);
+      const data = await response.json();
+      const config = data.config || {};
+      setConfigs((current) => ({
+        ...current,
+        [channelName]: {
+          cwd: config.cwd || '',
+          provider: config.provider || 'claude',
+          model: config.model || '',
+          appId: config.appId || '',
+          appSecretInput: '',
+          domain: config.domain || 'feishu',
+          botName: config.botName || '',
+          allowedChatTypes:
+            Array.isArray(config.allowedChatTypes) && config.allowedChatTypes.length > 0
+              ? config.allowedChatTypes
+              : ['p2p'],
+          hasAppSecret: Boolean(config.hasAppSecret),
+        },
+      }));
+    } catch (error) {
+      console.error('Failed to fetch channel config:', error);
+    } finally {
+      setConfigLoading(false);
+    }
+  };
+
+  const updateSelectedConfig = (patch: Partial<ChannelConfigDraft>) => {
+    if (!selectedChannel) {
+      return;
+    }
+    setConfigs((current) => ({
+      ...current,
+      [selectedChannel]: {
+        ...(current[selectedChannel] || DEFAULT_CONFIG),
+        ...patch,
+      },
+    }));
   };
 
   const handleInstall = async () => {
@@ -84,10 +181,9 @@ function ChannelsSettingsTab() {
         throw new Error(error.error || 'Failed to install channel');
       }
 
-      console.log('Channel installed successfully');
       setInstallUrl('');
       setShowInstallForm(false);
-      fetchChannels();
+      await fetchChannels();
     } catch (error: any) {
       console.error(error.message || 'Failed to install channel');
     }
@@ -100,9 +196,7 @@ function ChannelsSettingsTab() {
       });
 
       if (!response.ok) throw new Error('Failed to enable channel');
-
-      console.log('Channel enabled');
-      fetchChannels();
+      await fetchChannels();
     } catch (error) {
       console.error('Failed to enable channel');
     }
@@ -115,9 +209,7 @@ function ChannelsSettingsTab() {
       });
 
       if (!response.ok) throw new Error('Failed to disable channel');
-
-      console.log('Channel disabled');
-      fetchChannels();
+      await fetchChannels();
     } catch (error) {
       console.error('Failed to disable channel');
     }
@@ -130,9 +222,7 @@ function ChannelsSettingsTab() {
       });
 
       if (!response.ok) throw new Error('Failed to restart channel');
-
-      console.log('Channel restarted');
-      fetchChannels();
+      await fetchChannels();
     } catch (error) {
       console.error('Failed to restart channel');
     }
@@ -150,11 +240,78 @@ function ChannelsSettingsTab() {
 
       if (!response.ok) throw new Error('Failed to uninstall channel');
 
-      console.log('Channel uninstalled');
+      setConfigs((current) => {
+        const next = { ...current };
+        delete next[channelName];
+        return next;
+      });
       setSelectedChannel(null);
-      fetchChannels();
+      await fetchChannels();
     } catch (error) {
       console.error('Failed to uninstall channel');
+    }
+  };
+
+  const handleSaveConfig = async () => {
+    if (!selectedChannel || !selectedConfig) {
+      return;
+    }
+
+    setConfigSaving(true);
+    setConfigStatus(null);
+    try {
+      const payload: Record<string, unknown> = {
+        cwd: selectedConfig.cwd.trim() || null,
+        provider: selectedConfig.provider,
+        model: selectedConfig.model.trim() || null,
+      };
+
+      if (isFeishuSelected) {
+        payload.appId = selectedConfig.appId.trim();
+        payload.domain = selectedConfig.domain;
+        payload.botName = selectedConfig.botName.trim() || null;
+        payload.allowedChatTypes = selectedConfig.allowedChatTypes;
+        if (selectedConfig.appSecretInput.trim()) {
+          payload.appSecret = selectedConfig.appSecretInput.trim();
+        }
+      }
+
+      const response = await authenticatedFetch(`/api/channels/${selectedChannel}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to save config');
+      }
+
+      const nextConfig = data.config || {};
+      setConfigs((current) => ({
+        ...current,
+        [selectedChannel]: {
+          cwd: nextConfig.cwd || '',
+          provider: nextConfig.provider || 'claude',
+          model: nextConfig.model || '',
+          appId: nextConfig.appId || '',
+          appSecretInput: '',
+          domain: nextConfig.domain || 'feishu',
+          botName: nextConfig.botName || '',
+          allowedChatTypes:
+            Array.isArray(nextConfig.allowedChatTypes) && nextConfig.allowedChatTypes.length > 0
+              ? nextConfig.allowedChatTypes
+              : ['p2p'],
+          hasAppSecret: Boolean(nextConfig.hasAppSecret),
+        },
+      }));
+      setConfigStatus(data.restarted ? 'Configuration saved and channel restarted.' : 'Configuration saved.');
+      await fetchChannels();
+    } catch (error: any) {
+      console.error(error.message || 'Failed to save config');
+      setConfigStatus(error.message || 'Failed to save config');
+    } finally {
+      setConfigSaving(false);
     }
   };
 
@@ -177,26 +334,28 @@ function ChannelsSettingsTab() {
 
       if (!response.ok) throw new Error('Failed to add sender');
 
-      console.log('Sender added to allowlist');
       setNewSenderId('');
-      fetchAccessList(selectedChannel);
+      await fetchAccessList(selectedChannel);
     } catch (error) {
       console.error('Failed to add sender');
     }
   };
 
   const handleRemoveSender = async (senderId: string) => {
-    if (!selectedChannel) return;
+    if (!selectedChannel) {
+      return;
+    }
 
     try {
-      const response = await authenticatedFetch(`/api/channels/${selectedChannel}/access/${encodeURIComponent(senderId)}`, {
-        method: 'DELETE',
-      });
+      const response = await authenticatedFetch(
+        `/api/channels/${selectedChannel}/access/${encodeURIComponent(senderId)}`,
+        {
+          method: 'DELETE',
+        },
+      );
 
       if (!response.ok) throw new Error('Failed to remove sender');
-
-      console.log('Sender removed from allowlist');
-      fetchAccessList(selectedChannel);
+      await fetchAccessList(selectedChannel);
     } catch (error) {
       console.error('Failed to remove sender');
     }
@@ -204,19 +363,30 @@ function ChannelsSettingsTab() {
 
   const getStatusIcon = (status: string, enabled: boolean) => {
     if (!enabled) return <PowerOff className="h-4 w-4 text-muted-foreground" />;
-    if (status === 'running') return <Power className="h-4 w-4 text-green-500" />;
+    if (status === 'running') return <Power className="h-4 w-4 text-emerald-500" />;
     if (status === 'error') return <PowerOff className="h-4 w-4 text-red-500" />;
     return <PowerOff className="h-4 w-4 text-muted-foreground" />;
   };
 
+  const toggleAllowedChatType = (chatType: string) => {
+    if (!selectedConfig) {
+      return;
+    }
+    const nextValues = selectedConfig.allowedChatTypes.includes(chatType)
+      ? selectedConfig.allowedChatTypes.filter((value) => value !== chatType)
+      : [...selectedConfig.allowedChatTypes, chatType];
+    updateSelectedConfig({
+      allowedChatTypes: nextValues.length > 0 ? nextValues : ['p2p'],
+    });
+  };
+
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-lg font-semibold text-foreground">Channels</h3>
           <p className="text-sm text-muted-foreground">
-            Manage external messaging channels (iMessage, Discord, Telegram, etc.)
+            Manage external messaging channels with isolated runtime and platform config.
           </p>
         </div>
         <Button
@@ -230,17 +400,16 @@ function ChannelsSettingsTab() {
         </Button>
       </div>
 
-      {/* Install Form */}
       {showInstallForm && (
-        <div className="rounded-lg border border-border bg-muted/50 p-4">
+        <div className="rounded-2xl border border-border/70 bg-muted/40 p-4 shadow-sm">
           <h4 className="mb-3 text-sm font-medium">Install New Channel</h4>
           <div className="flex gap-2">
             <input
               type="text"
               value={installUrl}
               onChange={(e) => setInstallUrl(e.target.value)}
-              placeholder="GitHub URL (e.g., user/repo or https://github.com/user/repo)"
-              className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              placeholder="GitHub URL or local path"
+              className={FIELD_CLASS}
             />
             <Button size="sm" onClick={handleInstall}>
               Install
@@ -250,18 +419,17 @@ function ChannelsSettingsTab() {
             </Button>
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            Enter a GitHub repository URL containing a channel plugin
+            Local installs now also resolve package dependencies automatically.
           </p>
         </div>
       )}
 
-      {/* Channels List */}
       {loading ? (
         <div className="flex items-center justify-center py-8">
           <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
       ) : channels.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border py-12">
+        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border py-12">
           <MessageSquare className="mb-4 h-12 w-12 text-muted-foreground" />
           <p className="text-muted-foreground">No channels installed</p>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -269,22 +437,21 @@ function ChannelsSettingsTab() {
           </p>
         </div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
-          {/* Channel List */}
+        <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
           <div className="space-y-3">
             {channels.map((channel) => (
               <div
                 key={channel.name}
                 onClick={() => setSelectedChannel(channel.name)}
-                className={`cursor-pointer rounded-lg border p-4 transition-colors hover:bg-accent/50 ${
+                className={`cursor-pointer rounded-2xl border p-4 transition-all hover:border-primary/50 hover:bg-accent/40 ${
                   selectedChannel === channel.name
-                    ? 'border-primary bg-accent'
-                    : 'border-border bg-background'
+                    ? 'border-primary/70 bg-accent/70 shadow-sm'
+                    : 'border-border/70 bg-background'
                 }`}
               >
-                <div className="flex items-start justify-between">
+                <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
+                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10">
                       <MessageSquare className="h-5 w-5 text-primary" />
                     </div>
                     <div>
@@ -299,11 +466,11 @@ function ChannelsSettingsTab() {
                   </div>
                 </div>
 
-                <p className="mt-2 text-sm text-muted-foreground line-clamp-2">
+                <p className="mt-3 text-sm leading-6 text-muted-foreground">
                   {channel.description}
                 </p>
 
-                <div className="mt-3 flex items-center gap-2">
+                <div className="mt-4 flex flex-wrap items-center gap-2">
                   {channel.enabled ? (
                     <>
                       <Button
@@ -313,7 +480,7 @@ function ChannelsSettingsTab() {
                           e.stopPropagation();
                           handleDisable(channel.name);
                         }}
-                        className="h-7 gap-1 text-xs"
+                        className="h-8 gap-1 text-xs"
                       >
                         <PowerOff className="h-3 w-3" />
                         Disable
@@ -325,7 +492,7 @@ function ChannelsSettingsTab() {
                           e.stopPropagation();
                           handleRestart(channel.name);
                         }}
-                        className="h-7 gap-1 text-xs"
+                        className="h-8 gap-1 text-xs"
                       >
                         <RefreshCw className="h-3 w-3" />
                         Restart
@@ -339,7 +506,7 @@ function ChannelsSettingsTab() {
                         e.stopPropagation();
                         handleEnable(channel.name);
                       }}
-                      className="h-7 gap-1 text-xs"
+                      className="h-8 gap-1 text-xs"
                     >
                       <Power className="h-3 w-3" />
                       Enable
@@ -352,7 +519,7 @@ function ChannelsSettingsTab() {
                       e.stopPropagation();
                       handleUninstall(channel.name);
                     }}
-                    className="h-7 gap-1 text-xs text-destructive hover:text-destructive"
+                    className="h-8 gap-1 text-xs text-destructive hover:text-destructive"
                   >
                     <Trash2 className="h-3 w-3" />
                     Uninstall
@@ -362,59 +529,240 @@ function ChannelsSettingsTab() {
             ))}
           </div>
 
-          {/* Access Control Panel */}
-          {selectedChannel && (
-            <div className="rounded-lg border border-border bg-background p-4">
-              <div className="mb-4 flex items-center gap-2 border-b border-border pb-4">
-                <Shield className="h-5 w-5 text-primary" />
-                <h4 className="font-medium">Access Control</h4>
-              </div>
-
-              <div className="mb-4">
-                <p className="mb-2 text-sm text-muted-foreground">
-                  Add sender IDs to the allowlist
-                </p>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newSenderId}
-                    onChange={(e) => setNewSenderId(e.target.value)}
-                    placeholder="Phone number or email"
-                    className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                  <Button size="sm" onClick={handleAddSender}>
-                    Add
-                  </Button>
+          {selectedChannel && selectedChannelData && (
+            <div className="space-y-4">
+              <div className="rounded-3xl border border-border/70 bg-background p-5 shadow-sm">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                      Channel Configuration
+                    </p>
+                    <h4 className="mt-2 text-xl font-semibold text-foreground">
+                      {selectedChannelData.displayName || selectedChannelData.name}
+                    </h4>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Runtime options stay isolated per channel. iMessage and Feishu can use
+                      different working directories, providers, models, and platform credentials.
+                    </p>
+                  </div>
+                  <div className="rounded-full border border-border/70 px-3 py-1 text-xs text-muted-foreground">
+                    {selectedChannelData.status}
+                  </div>
                 </div>
-              </div>
 
-              <div className="space-y-2">
-                <h5 className="flex items-center gap-2 text-sm font-medium">
-                  <Users className="h-4 w-4" />
-                  Allowed Senders ({accessList.length})
-                </h5>
-                {accessList.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No senders in allowlist</p>
+                {configLoading || !selectedConfig ? (
+                  <div className="flex items-center justify-center py-8">
+                    <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
+                  </div>
                 ) : (
-                  <div className="max-h-64 space-y-1 overflow-y-auto">
-                    {accessList.map((entry) => (
-                      <div
-                        key={entry.senderId}
-                        className="flex items-center justify-between rounded-md bg-muted px-3 py-2"
-                      >
-                        <span className="text-sm">{entry.senderId}</span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleRemoveSender(entry.senderId)}
-                          className="h-6 w-6 p-0 text-destructive"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
+                  <div className="mt-6 space-y-6">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="md:col-span-2">
+                        <label className="mb-2 block text-sm font-medium text-foreground">
+                          Working Directory
+                        </label>
+                        <input
+                          type="text"
+                          value={selectedConfig.cwd}
+                          onChange={(e) => updateSelectedConfig({ cwd: e.target.value })}
+                          placeholder="/path/to/project"
+                          className={FIELD_CLASS}
+                        />
                       </div>
-                    ))}
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-foreground">
+                          Provider
+                        </label>
+                        <select
+                          value={selectedConfig.provider}
+                          onChange={(e) => updateSelectedConfig({ provider: e.target.value })}
+                          className={FIELD_CLASS}
+                        >
+                          <option value="claude">Claude</option>
+                          <option value="cursor">Cursor</option>
+                          <option value="codex">Codex</option>
+                          <option value="gemini">Gemini</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-foreground">
+                          Model
+                        </label>
+                        <input
+                          type="text"
+                          value={selectedConfig.model}
+                          onChange={(e) => updateSelectedConfig({ model: e.target.value })}
+                          placeholder="Optional model override"
+                          className={FIELD_CLASS}
+                        />
+                      </div>
+                    </div>
+
+                    {isFeishuSelected && (
+                      <div className="rounded-2xl border border-sky-500/15 bg-sky-500/5 p-4">
+                        <div className="mb-4 flex items-center justify-between gap-3">
+                          <div>
+                            <h5 className="text-sm font-semibold text-foreground">
+                              Feishu / Lark Runtime
+                            </h5>
+                            <p className="mt-1 text-sm text-muted-foreground">
+                              These values belong only to feishu-channel and do not affect other
+                              channels.
+                            </p>
+                          </div>
+                          <div className="rounded-full bg-background/80 px-3 py-1 text-xs text-muted-foreground">
+                            {selectedConfig.hasAppSecret ? 'App Secret stored' : 'App Secret missing'}
+                          </div>
+                        </div>
+
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div>
+                            <label className="mb-2 block text-sm font-medium text-foreground">
+                              App ID
+                            </label>
+                            <input
+                              type="text"
+                              value={selectedConfig.appId}
+                              onChange={(e) => updateSelectedConfig({ appId: e.target.value })}
+                              placeholder="cli_xxx"
+                              className={FIELD_CLASS}
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-2 block text-sm font-medium text-foreground">
+                              App Secret
+                            </label>
+                            <input
+                              type="password"
+                              value={selectedConfig.appSecretInput}
+                              onChange={(e) => updateSelectedConfig({ appSecretInput: e.target.value })}
+                              placeholder={
+                                selectedConfig.hasAppSecret
+                                  ? 'Leave blank to keep current secret'
+                                  : 'Enter app secret'
+                              }
+                              className={FIELD_CLASS}
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-2 block text-sm font-medium text-foreground">
+                              Domain
+                            </label>
+                            <select
+                              value={selectedConfig.domain}
+                              onChange={(e) => updateSelectedConfig({ domain: e.target.value })}
+                              className={FIELD_CLASS}
+                            >
+                              <option value="feishu">Feishu (China)</option>
+                              <option value="lark">Lark (Global)</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="mb-2 block text-sm font-medium text-foreground">
+                              Bot Name
+                            </label>
+                            <input
+                              type="text"
+                              value={selectedConfig.botName}
+                              onChange={(e) => updateSelectedConfig({ botName: e.target.value })}
+                              placeholder="Optional display name"
+                              className={FIELD_CLASS}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="mt-4">
+                          <p className="mb-3 text-sm font-medium text-foreground">
+                            Allowed Chat Types
+                          </p>
+                          <div className="flex flex-wrap gap-3">
+                            {['p2p', 'group'].map((chatType) => (
+                              <label
+                                key={chatType}
+                                className="flex items-center gap-2 rounded-full border border-border/70 bg-background/80 px-3 py-2 text-sm text-foreground"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selectedConfig.allowedChatTypes.includes(chatType)}
+                                  onChange={() => toggleAllowedChatType(chatType)}
+                                  className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
+                                />
+                                {chatType === 'p2p' ? 'Direct Messages' : 'Group Mentions'}
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-sm text-muted-foreground">
+                        {configStatus || 'Save changes to persist this channel configuration.'}
+                      </p>
+                      <Button onClick={handleSaveConfig} disabled={configSaving} className="gap-2">
+                        {configSaving && <RefreshCw className="h-4 w-4 animate-spin" />}
+                        Save Configuration
+                      </Button>
+                    </div>
                   </div>
                 )}
+              </div>
+
+              <div className="rounded-3xl border border-border/70 bg-background p-5 shadow-sm">
+                <div className="mb-4 flex items-center gap-2 border-b border-border/70 pb-4">
+                  <Shield className="h-5 w-5 text-primary" />
+                  <h4 className="font-medium">Access Control</h4>
+                </div>
+
+                <div className="mb-4">
+                  <p className="mb-2 text-sm text-muted-foreground">
+                    Add sender IDs to the allowlist
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newSenderId}
+                      onChange={(e) => setNewSenderId(e.target.value)}
+                      placeholder="Phone number, email, or open_id"
+                      className={FIELD_CLASS}
+                    />
+                    <Button size="sm" onClick={handleAddSender}>
+                      Add
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <h5 className="flex items-center gap-2 text-sm font-medium">
+                    <Users className="h-4 w-4" />
+                    Allowed Senders ({accessList.length})
+                  </h5>
+                  {accessList.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No senders in allowlist</p>
+                  ) : (
+                    <div className="max-h-72 space-y-2 overflow-y-auto">
+                      {accessList.map((entry) => (
+                        <div
+                          key={entry.senderId}
+                          className="flex items-center justify-between rounded-2xl border border-border/70 bg-muted/30 px-3 py-2"
+                        >
+                          <div>
+                            <p className="text-sm text-foreground">{entry.senderId}</p>
+                            <p className="text-xs text-muted-foreground">{entry.policy}</p>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleRemoveSender(entry.senderId)}
+                            className="h-8 w-8 p-0 text-destructive"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
