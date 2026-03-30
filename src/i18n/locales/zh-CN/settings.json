@@ -105,7 +105,8 @@
     "git": "Git",
     "apiTokens": "API 和令牌",
     "tasks": "任务",
-    "plugins": "插件"
+    "plugins": "插件",
+    "channels": "频道"
   },
   "appearanceSettings": {
     "darkMode": {

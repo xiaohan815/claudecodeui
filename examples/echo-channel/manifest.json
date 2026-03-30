@@ -1,0 +1,12 @@
+{
+  "name": "echo-channel",
+  "displayName": "Echo Channel",
+  "version": "0.1.0",
+  "description": "Example channel plugin that echoes messages back - for development reference",
+  "type": "channel",
+  "entry": "server.js",
+  "server": "server.js",
+  "icon": "MessageSquare",
+  "slot": "tab",
+  "permissions": []
+}

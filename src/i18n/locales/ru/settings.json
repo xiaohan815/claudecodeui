@@ -104,7 +104,8 @@
     "appearance": "Внешний вид",
     "git": "Git",
     "apiTokens": "API и токены",
-    "tasks": "Задачи"
+    "tasks": "Задачи",
+    "channels": "Каналы"
   },
   "appearanceSettings": {
     "darkMode": {

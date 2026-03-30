@@ -11,6 +11,7 @@ import CredentialsSettingsTab from '../view/tabs/api-settings/CredentialsSetting
 import GitSettingsTab from '../view/tabs/git-settings/GitSettingsTab';
 import TasksSettingsTab from '../view/tabs/tasks-settings/TasksSettingsTab';
 import PluginSettingsTab from '../../plugins/view/PluginSettingsTab';
+import ChannelsSettingsTab from './tabs/channels-settings/ChannelsSettingsTab';
 import { useSettingsController } from '../hooks/useSettingsController';
 import type { SettingsProps } from '../types/types';
 
@@ -164,6 +165,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
               {activeTab === 'api' && <CredentialsSettingsTab />}
 
               {activeTab === 'plugins' && <PluginSettingsTab />}
+
+              {activeTab === 'channels' && <ChannelsSettingsTab />}
             </div>
           </main>
         </div>

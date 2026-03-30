@@ -54,13 +54,14 @@
 
 ## Features
 
-- **Responsive Design** - Works seamlessly across desktop, tablet, and mobile so you can also use Agents from mobile 
+- **Responsive Design** - Works seamlessly across desktop, tablet, and mobile so you can also use Agents from mobile
 - **Interactive Chat Interface** - Built-in chat interface for seamless communication with the Agents
 - **Integrated Shell Terminal** - Direct access to the Agents CLI through built-in shell functionality
 - **File Explorer** - Interactive file tree with syntax highlighting and live editing
-- **Git Explorer** - View, stage and commit your changes. You can also switch branches 
+- **Git Explorer** - View, stage and commit your changes. You can also switch branches
 - **Session Management** - Resume conversations, manage multiple sessions, and track history
 - **Plugin System** - Extend CloudCLI with custom plugins — add new tabs, backend services, and integrations. [Build your own →](https://github.com/cloudcli-ai/cloudcli-plugin-starter)
+- **Channel System** - Connect external messaging platforms (iMessage, Telegram, Discord, Slack, 飞书, etc.) to your AI assistant. [Learn more →](docs/CHANNEL_USAGE.md)
 - **TaskMaster AI Integration** *(Optional)* - Advanced project management with AI-powered task planning, PRD parsing, and workflow automation
 - **Model Compatibility** - Works with Claude, GPT, and Gemini model families (see [`shared/modelConstants.js`](shared/modelConstants.js) for the full list of supported models)
 

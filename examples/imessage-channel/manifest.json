@@ -1,0 +1,12 @@
+{
+  "name": "imessage-channel",
+  "displayName": "iMessage Channel",
+  "version": "0.1.0",
+  "description": "Connect iMessage to claudecodeui. Polls chat.db directly; replies via AppleScript. macOS only.",
+  "type": "channel",
+  "entry": "server.js",
+  "server": "server.js",
+  "icon": "MessageSquare",
+  "slot": "tab",
+  "permissions": []
+}

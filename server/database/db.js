@@ -119,6 +119,51 @@ const runMigrations = () => {
     )`);
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_names_lookup ON session_names(session_id, provider)');
 
+    // Channel feature migrations
+    // Create channel_service_tokens table for service token management
+    db.exec(`CREATE TABLE IF NOT EXISTS channel_service_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token_id TEXT NOT NULL UNIQUE,
+      channel_name TEXT NOT NULL,
+      token_hash TEXT NOT NULL,
+      token TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME NOT NULL,
+      is_revoked BOOLEAN DEFAULT 0
+    )`);
+    // Migration: add token column if not exists (for existing databases)
+    try {
+      db.exec('ALTER TABLE channel_service_tokens ADD COLUMN token TEXT');
+    } catch (e) {
+      // Column already exists, ignore error
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_channel_tokens_lookup ON channel_service_tokens(token_id, channel_name)');
+
+    // Create channel_access table for access control
+    db.exec(`CREATE TABLE IF NOT EXISTS channel_access (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel_name TEXT NOT NULL,
+      sender_id TEXT NOT NULL,
+      sender_type TEXT DEFAULT 'user',
+      policy TEXT DEFAULT 'pending',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(channel_name, sender_id)
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_channel_access_lookup ON channel_access(channel_name, sender_id)');
+
+    // Create channel_sessions table for session tracking
+    db.exec(`CREATE TABLE IF NOT EXISTS channel_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel_name TEXT NOT NULL,
+      external_chat_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(channel_name, external_chat_id)
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_channel_sessions_lookup ON channel_sessions(channel_name, external_chat_id)');
+
     console.log('Database migrations completed successfully');
   } catch (error) {
     console.error('Error running migrations:', error.message);
@@ -186,6 +231,17 @@ const userDb = {
     try {
       const row = db.prepare('SELECT id, username, created_at, last_login FROM users WHERE id = ? AND is_active = 1').get(userId);
       return row;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Create system user for channel service (id=0, no password)
+  createSystemUser: (userId, username) => {
+    try {
+      const stmt = db.prepare('INSERT OR IGNORE INTO users (id, username, password_hash, is_active) VALUES (?, ?, \'\', 1)');
+      const result = stmt.run(userId, username);
+      return { id: userId, username };
     } catch (err) {
       throw err;
     }
@@ -476,6 +532,197 @@ const githubTokensDb = {
   }
 };
 
+// Channel service tokens database operations
+const channelTokenDb = {
+  // Create a new service token record
+  createToken: ({ tokenId, channelName, token, createdAt, expiresAt, isRevoked = false }) => {
+    try {
+      // Store both hash and full token (for local reuse)
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+      const stmt = db.prepare('INSERT INTO channel_service_tokens (token_id, channel_name, token_hash, token, created_at, expires_at, is_revoked) VALUES (?, ?, ?, ?, ?, ?, ?)');
+      stmt.run(tokenId, channelName, tokenHash, token, createdAt, expiresAt, isRevoked ? 1 : 0);
+      return { tokenId, channelName };
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Check if a token is revoked
+  isTokenRevoked: (tokenId) => {
+    try {
+      const row = db.prepare('SELECT is_revoked FROM channel_service_tokens WHERE token_id = ?').get(tokenId);
+      return row?.is_revoked === 1;
+    } catch (err) {
+      console.error('[DB] Error checking token revocation:', err);
+      return false;
+    }
+  },
+
+  // Revoke a token
+  revokeToken: (tokenId) => {
+    try {
+      const stmt = db.prepare('UPDATE channel_service_tokens SET is_revoked = 1 WHERE token_id = ?');
+      stmt.run(tokenId);
+      return true;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Revoke all tokens for a channel
+  revokeAllChannelTokens: (channelName) => {
+    try {
+      const stmt = db.prepare('UPDATE channel_service_tokens SET is_revoked = 1 WHERE channel_name = ?');
+      const result = stmt.run(channelName);
+      return result.changes;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Delete expired tokens
+  deleteExpiredTokens: () => {
+    try {
+      const stmt = db.prepare('DELETE FROM channel_service_tokens WHERE expires_at < datetime(\'now\') OR is_revoked = 1');
+      const result = stmt.run();
+      return result.changes;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Get a valid (non-expired, non-revoked) token for a channel
+  getValidTokenForChannel: (channelName) => {
+    try {
+      const row = db.prepare('SELECT * FROM channel_service_tokens WHERE channel_name = ? AND expires_at > datetime(\'now\') AND is_revoked = 0 ORDER BY created_at DESC LIMIT 1').get(channelName);
+      return row || null;
+    } catch (err) {
+      console.error('[DB] Error getting valid token:', err);
+      return null;
+    }
+  },
+
+  // Get all tokens for a channel
+  getChannelTokens: (channelName) => {
+    try {
+      const rows = db.prepare('SELECT token_id, channel_name, created_at, expires_at, is_revoked FROM channel_service_tokens WHERE channel_name = ? ORDER BY created_at DESC').all(channelName);
+      return rows;
+    } catch (err) {
+      throw err;
+    }
+  }
+};
+
+// Channel access control database operations
+const channelAccessDb = {
+  // Add or update access entry
+  setAccess: (channelName, senderId, senderType = 'user', policy = 'pending') => {
+    try {
+      const stmt = db.prepare(`
+        INSERT INTO channel_access (channel_name, sender_id, sender_type, policy)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(channel_name, sender_id)
+        DO UPDATE SET policy = excluded.policy, updated_at = CURRENT_TIMESTAMP
+      `);
+      stmt.run(channelName, senderId, senderType, policy);
+      return true;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Get access entry for a sender
+  getAccess: (channelName, senderId) => {
+    try {
+      const row = db.prepare('SELECT * FROM channel_access WHERE channel_name = ? AND sender_id = ?').get(channelName, senderId);
+      return row;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Get all access entries for a channel
+  getAllAccess: (channelName) => {
+    try {
+      const rows = db.prepare('SELECT * FROM channel_access WHERE channel_name = ? ORDER BY created_at DESC').all(channelName);
+      return rows;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Delete access entry
+  deleteAccess: (channelName, senderId) => {
+    try {
+      const stmt = db.prepare('DELETE FROM channel_access WHERE channel_name = ? AND sender_id = ?');
+      const result = stmt.run(channelName, senderId);
+      return result.changes > 0;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Get all allowed senders for a channel
+  getAllowedSenders: (channelName) => {
+    try {
+      const rows = db.prepare('SELECT sender_id FROM channel_access WHERE channel_name = ? AND policy = ?').all(channelName, 'allow');
+      return rows.map(r => r.sender_id);
+    } catch (err) {
+      throw err;
+    }
+  }
+};
+
+// Channel sessions database operations
+const channelSessionsDb = {
+  // Create or update session mapping
+  setSession: (channelName, externalChatId, sessionId) => {
+    try {
+      const stmt = db.prepare(`
+        INSERT INTO channel_sessions (channel_name, external_chat_id, session_id)
+        VALUES (?, ?, ?)
+        ON CONFLICT(channel_name, external_chat_id)
+        DO UPDATE SET session_id = excluded.session_id, updated_at = CURRENT_TIMESTAMP
+      `);
+      stmt.run(channelName, externalChatId, sessionId);
+      return true;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Get session for external chat
+  getSession: (channelName, externalChatId) => {
+    try {
+      const row = db.prepare('SELECT session_id FROM channel_sessions WHERE channel_name = ? AND external_chat_id = ?').get(channelName, externalChatId);
+      return row?.session_id || null;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Get all sessions for a channel
+  getAllSessions: (channelName) => {
+    try {
+      const rows = db.prepare('SELECT external_chat_id, session_id, created_at FROM channel_sessions WHERE channel_name = ?').all(channelName);
+      return rows;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Delete session mapping
+  deleteSession: (channelName, externalChatId) => {
+    try {
+      const stmt = db.prepare('DELETE FROM channel_sessions WHERE channel_name = ? AND external_chat_id = ?');
+      const result = stmt.run(channelName, externalChatId);
+      return result.changes > 0;
+    } catch (err) {
+      throw err;
+    }
+  }
+};
+
 export {
   db,
   initializeDatabase,
@@ -485,5 +732,8 @@ export {
   sessionNamesDb,
   applyCustomSessionNames,
   appConfigDb,
-  githubTokensDb // Backward compatibility
+  githubTokensDb, // Backward compatibility
+  channelTokenDb, // Channel service tokens
+  channelAccessDb, // Channel access control
+  channelSessionsDb // Channel session mappings
 };

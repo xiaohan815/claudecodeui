@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { userDb, appConfigDb } from '../database/db.js';
 import { IS_PLATFORM } from '../constants/config.js';
+import { isServiceToken, validateServiceToken, getSystemUser } from '../channels/token-manager.js';
 
 // Use env var if set, otherwise auto-generate a unique secret per installation
 const JWT_SECRET = process.env.JWT_SECRET || appConfigDb.getOrCreateJwtSecret();
@@ -51,6 +52,22 @@ const authenticateToken = async (req, res, next) => {
 
   if (!token) {
     return res.status(401).json({ error: 'Access denied. No token provided.' });
+  }
+
+  // Check if this is a service token (for channels)
+  if (isServiceToken(token)) {
+    const decoded = validateServiceToken(token);
+    if (!decoded) {
+      return res.status(403).json({ error: 'Invalid or expired service token' });
+    }
+
+    // Attach system user and channel info
+    req.user = getSystemUser();
+    req.channelSource = decoded.channel;
+    req.isServiceRequest = true;
+
+    console.log(`[AUTH] Service request from channel: ${decoded.channel}`);
+    return next();
   }
 
   try {
@@ -108,11 +125,26 @@ const authenticateWebSocket = (token) => {
     }
   }
 
-  // Normal OSS JWT validation
   if (!token) {
     return null;
   }
 
+  // Check if this is a service token (for channels)
+  if (isServiceToken(token)) {
+    const decoded = validateServiceToken(token);
+    if (decoded) {
+      // Return system user info with channel source
+      return {
+        userId: SYSTEM_USER_ID,
+        username: SYSTEM_USERNAME,
+        isSystem: true,
+        channelSource: decoded.channel
+      };
+    }
+    return null;
+  }
+
+  // Normal OSS JWT validation
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     // Verify user actually exists in database (matches REST authenticateToken behavior)
@@ -126,6 +158,10 @@ const authenticateWebSocket = (token) => {
     return null;
   }
 };
+
+// System user constants
+export const SYSTEM_USER_ID = 0;
+const SYSTEM_USERNAME = '__system__';
 
 export {
   validateApiKey,

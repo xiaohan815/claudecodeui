@@ -20,7 +20,7 @@ function sanitizeRepoUrl(raw) {
     return raw.replace(/\/\/[^@/]+@/, '//');
   }
 }
-const ALLOWED_TYPES = ['react', 'module'];
+const ALLOWED_TYPES = ['react', 'module', 'channel'];
 const ALLOWED_SLOTS = ['tab'];
 
 export function getPluginsDir() {

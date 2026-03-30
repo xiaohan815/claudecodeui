@@ -65,10 +65,12 @@ import userRoutes from './routes/user.js';
 import codexRoutes from './routes/codex.js';
 import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
+import channelsRoutes from './routes/channels.js';
 import { startEnabledPluginServers, stopAllPlugins } from './utils/plugin-process-manager.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './database/db.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
+import { initializeChannelBridge, startEnabledChannels, stopAllChannels } from './channels/index.js';
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini'];
 
@@ -394,6 +396,9 @@ app.use('/api/gemini', authenticateToken, geminiRoutes);
 
 // Plugins API Routes (protected)
 app.use('/api/plugins', authenticateToken, pluginsRoutes);
+
+// Channels API Routes (protected)
+app.use('/api/channels', authenticateToken, channelsRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
@@ -2535,11 +2540,28 @@ async function startServer() {
             startEnabledPluginServers().catch(err => {
                 console.error('[Plugins] Error during startup:', err.message);
             });
+
+            // Initialize channel bridge
+            initializeChannelBridge((message) => {
+                // Broadcast to all connected WebSocket clients
+                const data = JSON.stringify(message);
+                connectedClients.forEach(client => {
+                    if (client.readyState === WebSocket.OPEN) {
+                        client.send(data);
+                    }
+                });
+            });
+
+            // Start enabled channels
+            startEnabledChannels().catch(err => {
+                console.error('[Channels] Error during startup:', err.message);
+            });
         });
 
-        // Clean up plugin processes on shutdown
+        // Clean up plugin processes and channels on shutdown
         const shutdownPlugins = async () => {
             await stopAllPlugins();
+            await stopAllChannels();
             process.exit(0);
         };
         process.on('SIGTERM', () => void shutdownPlugins());

@@ -135,3 +135,4 @@ tasks/
 !src/i18n/locales/en/tasks.json
 !src/i18n/locales/ja/tasks.json
 !src/i18n/locales/ru/tasks.json
+.python-version

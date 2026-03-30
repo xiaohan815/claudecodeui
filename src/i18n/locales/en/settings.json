@@ -105,7 +105,8 @@
     "git": "Git",
     "apiTokens": "API & Tokens",
     "tasks": "Tasks",
-    "plugins": "Plugins"
+    "plugins": "Plugins",
+    "channels": "Channels"
   },
   "appearanceSettings": {
     "darkMode": {
