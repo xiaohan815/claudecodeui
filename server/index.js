@@ -31,7 +31,7 @@ const c = {
     dim: (text) => `${colors.dim}${text}${colors.reset}`,
 };
 
-console.log('PORT from env:', process.env.PORT);
+console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
 
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -44,7 +44,7 @@ import pty from 'node-pty';
 import fetch from 'node-fetch';
 import mime from 'mime-types';
 
-import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
+import { getProjects, getSessions, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
 import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions } from './openai-codex.js';
@@ -65,10 +65,14 @@ import userRoutes from './routes/user.js';
 import codexRoutes from './routes/codex.js';
 import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
-import { startEnabledPluginServers, stopAllPlugins } from './utils/plugin-process-manager.js';
+import messagesRoutes from './routes/messages.js';
+import { createNormalizedMessage } from './providers/types.js';
+import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './database/db.js';
+import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
+import { getConnectableHost } from '../shared/networkHosts.js';
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini'];
 
@@ -395,6 +399,9 @@ app.use('/api/gemini', authenticateToken, geminiRoutes);
 // Plugins API Routes (protected)
 app.use('/api/plugins', authenticateToken, pluginsRoutes);
 
+// Unified session messages route (protected)
+app.use('/api/sessions', authenticateToken, messagesRoutes);
+
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
 
@@ -503,31 +510,6 @@ app.get('/api/projects/:projectName/sessions', authenticateToken, async (req, re
         const result = await getSessions(req.params.projectName, parseInt(limit), parseInt(offset));
         applyCustomSessionNames(result.sessions, 'claude');
         res.json(result);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Get messages for a specific session
-app.get('/api/projects/:projectName/sessions/:sessionId/messages', authenticateToken, async (req, res) => {
-    try {
-        const { projectName, sessionId } = req.params;
-        const { limit, offset } = req.query;
-
-        // Parse limit and offset if provided
-        const parsedLimit = limit ? parseInt(limit, 10) : null;
-        const parsedOffset = offset ? parseInt(offset, 10) : 0;
-
-        const result = await getSessionMessages(projectName, sessionId, parsedLimit, parsedOffset);
-
-        // Handle both old and new response formats
-        if (Array.isArray(result)) {
-            // Backward compatibility: no pagination parameters were provided
-            res.json({ messages: result });
-        } else {
-            // New format with pagination info
-            res.json(result);
-        }
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -957,7 +939,6 @@ app.get('/api/projects/:projectName/files', authenticateToken, async (req, res) 
         }
 
         const files = await getFileTree(actualPath, 10, 0, true);
-        const hiddenFiles = files.filter(f => f.name.startsWith('.'));
         res.json(files);
     } catch (error) {
         console.error('[ERROR] File tree error:', error.message);
@@ -1395,6 +1376,50 @@ const uploadFilesHandler = async (req, res) => {
 
 app.post('/api/projects/:projectName/files/upload', authenticateToken, uploadFilesHandler);
 
+/**
+ * Proxy an authenticated client WebSocket to a plugin's internal WS server.
+ * Auth is enforced by verifyClient before this function is reached.
+ */
+function handlePluginWsProxy(clientWs, pathname) {
+    const pluginName = pathname.replace('/plugin-ws/', '');
+    if (!pluginName || /[^a-zA-Z0-9_-]/.test(pluginName)) {
+        clientWs.close(4400, 'Invalid plugin name');
+        return;
+    }
+
+    const port = getPluginPort(pluginName);
+    if (!port) {
+        clientWs.close(4404, 'Plugin not running');
+        return;
+    }
+
+    const upstream = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+
+    upstream.on('open', () => {
+        console.log(`[Plugins] WS proxy connected to "${pluginName}" on port ${port}`);
+    });
+
+    // Relay messages bidirectionally
+    upstream.on('message', (data) => {
+        if (clientWs.readyState === WebSocket.OPEN) clientWs.send(data);
+    });
+    clientWs.on('message', (data) => {
+        if (upstream.readyState === WebSocket.OPEN) upstream.send(data);
+    });
+
+    // Propagate close in both directions
+    upstream.on('close', () => { if (clientWs.readyState === WebSocket.OPEN) clientWs.close(); });
+    clientWs.on('close', () => { if (upstream.readyState === WebSocket.OPEN) upstream.close(); });
+
+    upstream.on('error', (err) => {
+        console.error(`[Plugins] WS proxy error for "${pluginName}":`, err.message);
+        if (clientWs.readyState === WebSocket.OPEN) clientWs.close(4502, 'Upstream error');
+    });
+    clientWs.on('error', () => {
+        if (upstream.readyState === WebSocket.OPEN) upstream.close();
+    });
+}
+
 // WebSocket connection handler that routes based on URL path
 wss.on('connection', (ws, request) => {
     const url = request.url;
@@ -1407,7 +1432,9 @@ wss.on('connection', (ws, request) => {
     if (pathname === '/shell') {
         handleShellConnection(ws);
     } else if (pathname === '/ws') {
-        handleChatConnection(ws);
+        handleChatConnection(ws, request);
+    } else if (pathname.startsWith('/plugin-ws/')) {
+        handlePluginWsProxy(ws, pathname);
     } else {
         console.log('[WARN] Unknown WebSocket path:', pathname);
         ws.close();
@@ -1416,17 +1443,21 @@ wss.on('connection', (ws, request) => {
 
 /**
  * WebSocket Writer - Wrapper for WebSocket to match SSEStreamWriter interface
+ *
+ * Provider files use `createNormalizedMessage()` from `providers/types.js` and
+ * adapter `normalizeMessage()` to produce unified NormalizedMessage events.
+ * The writer simply serialises and sends.
  */
 class WebSocketWriter {
-    constructor(ws) {
+    constructor(ws, userId = null) {
         this.ws = ws;
         this.sessionId = null;
+        this.userId = userId;
         this.isWebSocketWriter = true;  // Marker for transport detection
     }
 
     send(data) {
         if (this.ws.readyState === 1) { // WebSocket.OPEN
-            // Providers send raw objects, we stringify for WebSocket
             this.ws.send(JSON.stringify(data));
         } else {
             console.warn(`[WARN] WebSocket not open (state: ${this.ws.readyState}), message dropped:`, data?.type || 'unknown');
@@ -1447,14 +1478,14 @@ class WebSocketWriter {
 }
 
 // Handle chat WebSocket connections
-function handleChatConnection(ws) {
+function handleChatConnection(ws, request) {
     console.log('[INFO] Chat WebSocket connected');
 
     // Add to connected clients for project updates
     connectedClients.add(ws);
 
     // Wrap WebSocket with writer for consistent interface with SSEStreamWriter
-    const writer = new WebSocketWriter(ws);
+    const writer = new WebSocketWriter(ws, request?.user?.id ?? request?.user?.userId ?? null);
 
     ws.on('message', async (message) => {
         try {
@@ -1509,12 +1540,7 @@ function handleChatConnection(ws) {
                     success = await abortClaudeSDKSession(data.sessionId);
                 }
 
-                writer.send({
-                    type: 'session-aborted',
-                    sessionId: data.sessionId,
-                    provider,
-                    success
-                });
+                writer.send(createNormalizedMessage({ kind: 'complete', exitCode: success ? 0 : 1, aborted: true, success, sessionId: data.sessionId, provider }));
             } else if (data.type === 'claude-permission-response') {
                 // Relay UI approval decisions back into the SDK control flow.
                 // This does not persist permissions; it only resolves the in-flight request,
@@ -1530,12 +1556,7 @@ function handleChatConnection(ws) {
             } else if (data.type === 'cursor-abort') {
                 console.log('[DEBUG] Abort Cursor session:', data.sessionId);
                 const success = abortCursorSession(data.sessionId);
-                writer.send({
-                    type: 'session-aborted',
-                    sessionId: data.sessionId,
-                    provider: 'cursor',
-                    success
-                });
+                writer.send(createNormalizedMessage({ kind: 'complete', exitCode: success ? 0 : 1, aborted: true, success, sessionId: data.sessionId, provider: 'cursor' }));
             } else if (data.type === 'check-session-status') {
                 // Check if a specific session is currently processing
                 const provider = data.provider || 'claude';
@@ -2404,7 +2425,8 @@ app.get('*', (req, res) => {
         res.sendFile(indexPath);
     } else {
         // In development, redirect to Vite dev server only if dist doesn't exist
-        res.redirect(`http://localhost:${process.env.VITE_PORT || 5173}`);
+        const redirectHost = getConnectableHost(req.hostname);
+        res.redirect(`${req.protocol}://${redirectHost}:${VITE_PORT}`);
     }
 });
 
@@ -2492,10 +2514,10 @@ async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden =
     });
 }
 
-const PORT = process.env.PORT || 3001;
+const SERVER_PORT = process.env.SERVER_PORT || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
-// Show localhost in URL when binding to all interfaces (0.0.0.0 isn't a connectable address)
-const DISPLAY_HOST = HOST === '0.0.0.0' ? 'localhost' : HOST;
+const DISPLAY_HOST = getConnectableHost(HOST);
+const VITE_PORT = process.env.VITE_PORT || 5173;
 
 // Initialize database and start server
 async function startServer() {
@@ -2503,19 +2525,24 @@ async function startServer() {
         // Initialize authentication database
         await initializeDatabase();
 
+        // Configure Web Push (VAPID keys)
+        configureWebPush();
+
         // Check if running in production mode (dist folder exists)
         const distIndexPath = path.join(__dirname, '../dist/index.html');
         const isProduction = fs.existsSync(distIndexPath);
 
         // Log Claude implementation mode
         console.log(`${c.info('[INFO]')} Using Claude Agents SDK for Claude integration`);
-        console.log(`${c.info('[INFO]')} Running in ${c.bright(isProduction ? 'PRODUCTION' : 'DEVELOPMENT')} mode`);
+        console.log('');
 
-        if (!isProduction) {
-            console.log(`${c.warn('[WARN]')} Note: Requests will be proxied to Vite dev server at ${c.dim('http://localhost:' + (process.env.VITE_PORT || 5173))}`);
+        if (isProduction) {
+            console.log(`${c.info('[INFO]')} To run in production mode, go to http://${DISPLAY_HOST}:${SERVER_PORT}`);            
         }
 
-        server.listen(PORT, HOST, async () => {
+        console.log(`${c.info('[INFO]')} To run in development mode with hot-module replacement, go to http://${DISPLAY_HOST}:${VITE_PORT}`);
+   
+        server.listen(SERVER_PORT, HOST, async () => {
             const appInstallPath = path.join(__dirname, '..');
 
             console.log('');
@@ -2523,7 +2550,7 @@ async function startServer() {
             console.log(`  ${c.bright('Claude Code UI Server - Ready')}`);
             console.log(c.dim('═'.repeat(63)));
             console.log('');
-            console.log(`${c.info('[INFO]')} Server URL:  ${c.bright('http://' + DISPLAY_HOST + ':' + PORT)}`);
+            console.log(`${c.info('[INFO]')} Server URL:  ${c.bright('http://' + DISPLAY_HOST + ':' + SERVER_PORT)}`);
             console.log(`${c.info('[INFO]')} Installed at: ${c.dim(appInstallPath)}`);
             console.log(`${c.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
             console.log('');
