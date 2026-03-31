@@ -16,6 +16,11 @@ import { spawnCursor } from "../cursor-cli.js";
 import { spawnGemini } from "../gemini-cli.js";
 import { queryCodex } from "../openai-codex.js";
 import { channelSessionsDb, channelConfigDb } from "../database/db.js";
+import { 
+  builtInHandlers, 
+  isKnownCommand, 
+  isChannelCompatible 
+} from "./commands.js";
 import {
   getAllChannels,
   getChannel,
@@ -784,8 +789,75 @@ router.post("/message", authenticateToken, async (req, res) => {
   const channelName = req.channelSource;
   const normalizedImages = Array.isArray(images) ? images : [];
 
-  // Load per-channel config: cwd, provider, model
+  // Load per-channel config: cwd, provider, model (needed for command context)
   const config = channelConfigDb.getConfig(channelName);
+
+  // Check if message is a slash command
+  if (message && typeof message === "string") {
+    const trimmed = message.trim();
+    
+    if (trimmed.startsWith('/')) {
+      const parts = trimmed.split(/\s+/);
+      const commandName = parts[0].toLowerCase();
+      const args = parts.slice(1);
+      
+      // If it's a known command, handle it locally
+      if (isKnownCommand(commandName)) {
+        try {
+          // Check if command is channel-compatible
+          if (isChannelCompatible(commandName)) {
+            // Execute the command handler
+            const handler = builtInHandlers[commandName];
+            const context = {
+              channelName,
+              externalChatId,
+              externalSenderId,
+              projectPath,
+              provider: config.provider || "claude",
+              model: config.model
+            };
+            
+            const result = await handler(args, context);
+            
+            // Special handling for /clear: delete session
+            if (commandName === '/clear') {
+              channelSessionsDb.deleteSession(channelName, externalChatId);
+            }
+            
+            // Format response for channel
+            let responseText = result.data?.message || result.data?.content || 'Command executed';
+            
+            // For /help, format the help text
+            if (commandName === '/help' && result.data?.content) {
+              responseText = result.data.content;
+            }
+            
+            // For /status, format the status data
+            if (commandName === '/status' && result.data) {
+              responseText = `Version: ${result.data.version || 'unknown'}\n` +
+                           `Uptime: ${result.data.uptime || 'unknown'}\n` +
+                           `Provider: ${result.data.provider || 'unknown'}\n` +
+                           `Model: ${result.data.model || 'unknown'}`;
+            }
+            
+            return res.json({ content: responseText });
+          } else {
+            // UI-only command
+            return res.json({ 
+              content: `The ${commandName} command is only available in the Claude Code UI.` 
+            });
+          }
+        } catch (error) {
+          console.error(`[ChannelMessage] Command execution error:`, error);
+          return res.status(500).json({ 
+            error: 'Command execution failed', 
+            details: error.message 
+          });
+        }
+      }
+      // If not a known command, continue to AI (fall through)
+    }
+  }
   // Priority: user's explicit config > projectPath from MCP server > homedir fallback
   // projectPath comes from the MCP server (defaults to homedir) and must NOT override
   // a user-configured cwd.

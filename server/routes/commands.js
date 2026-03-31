@@ -83,48 +83,56 @@ const builtInCommands = [
     name: '/help',
     description: 'Show help documentation for Claude Code',
     namespace: 'builtin',
+    channelCompatible: true,
     metadata: { type: 'builtin' }
   },
   {
     name: '/clear',
     description: 'Clear the conversation history',
     namespace: 'builtin',
+    channelCompatible: true,
     metadata: { type: 'builtin' }
   },
   {
     name: '/model',
     description: 'Switch or view the current AI model',
     namespace: 'builtin',
+    channelCompatible: false,
     metadata: { type: 'builtin' }
   },
   {
     name: '/cost',
     description: 'Display token usage and cost information',
     namespace: 'builtin',
+    channelCompatible: false,
     metadata: { type: 'builtin' }
   },
   {
     name: '/memory',
     description: 'Open CLAUDE.md memory file for editing',
     namespace: 'builtin',
+    channelCompatible: false,
     metadata: { type: 'builtin' }
   },
   {
     name: '/config',
     description: 'Open settings and configuration',
     namespace: 'builtin',
+    channelCompatible: false,
     metadata: { type: 'builtin' }
   },
   {
     name: '/status',
     description: 'Show system status and version information',
     namespace: 'builtin',
+    channelCompatible: true,
     metadata: { type: 'builtin' }
   },
   {
     name: '/rewind',
     description: 'Rewind the conversation to a previous state',
     namespace: 'builtin',
+    channelCompatible: false,
     metadata: { type: 'builtin' }
   }
 ];
@@ -597,5 +605,27 @@ router.post('/execute', async (req, res) => {
     });
   }
 });
+
+/**
+ * Helper function to check if a command name is known
+ * @param {string} commandName - Command name (e.g., '/help')
+ * @returns {boolean} True if command is in builtInCommands
+ */
+export function isKnownCommand(commandName) {
+  return builtInCommands.some(cmd => cmd.name === commandName);
+}
+
+/**
+ * Helper function to check if a command is channel-compatible
+ * @param {string} commandName - Command name (e.g., '/help')
+ * @returns {boolean} True if command can run in channels
+ */
+export function isChannelCompatible(commandName) {
+  const command = builtInCommands.find(cmd => cmd.name === commandName);
+  return command?.channelCompatible === true;
+}
+
+// Export built-in commands and handlers for use in channels
+export { builtInCommands, builtInHandlers };
 
 export default router;
