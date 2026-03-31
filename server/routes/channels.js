@@ -715,35 +715,24 @@ class ChannelResponseWriter {
   }
 
   send(data) {
-    if (data.type === "session-created") {
-      this._sessionId = data.sessionId;
-    } else if (data.type === "claude-response") {
-      const msg = data.data;
-      if (
-        msg?.type === "result" &&
-        msg?.subtype === "success" &&
-        typeof msg.result === "string"
-      ) {
-        this._resultText = msg.result;
+    // Handle new normalized message format (kind-based)
+    if (data.kind === "session_created") {
+      this._sessionId = data.newSessionId || data.sessionId;
+    } else if (data.kind === "text" && data.role === "assistant") {
+      // Assistant text message
+      if (typeof data.content === "string") {
+        this._textChunks.push(data.content);
       }
-      if (msg?.type === "assistant" && Array.isArray(msg?.message?.content)) {
-        for (const block of msg.message.content) {
-          if (block.type === "text") this._textChunks.push(block.text);
-        }
+    } else if (data.kind === "stream_delta") {
+      // Streaming text delta
+      if (typeof data.content === "string") {
+        this._textChunks.push(data.content);
       }
-      // Handle streaming text deltas (content_block_delta)
-      if (
-        msg?.type === "content_block_delta" &&
-        msg?.delta?.type === "text_delta" &&
-        typeof msg?.delta?.text === "string"
-      ) {
-        this._textChunks.push(msg.delta.text);
-      }
-    } else if (data.type === "claude-complete") {
+    } else if (data.kind === "complete") {
       const content = this._resultText ?? this._textChunks.join("");
       this._resolve({ content, sessionId: data.sessionId || this._sessionId });
-    } else if (data.type === "claude-error") {
-      this._reject(new Error(data.error || "AI query failed"));
+    } else if (data.kind === "error") {
+      this._reject(new Error(data.content || "AI query failed"));
     }
   }
 
