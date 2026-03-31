@@ -19,31 +19,23 @@ type ProviderLoginModalProps = {
   onComplete?: (exitCode: number) => void;
   customCommand?: string;
   isAuthenticated?: boolean;
-  isOnboarding?: boolean;
 };
 
 const getProviderCommand = ({
   provider,
   customCommand,
-  isAuthenticated,
-  isOnboarding,
+  isAuthenticated: _isAuthenticated,
 }: {
   provider: CliProvider;
   customCommand?: string;
   isAuthenticated: boolean;
-  isOnboarding: boolean;
 }) => {
   if (customCommand) {
     return customCommand;
   }
 
   if (provider === 'claude') {
-    if (isAuthenticated) {
-      return 'claude setup-token --dangerously-skip-permissions';
-    }
-    return isOnboarding
-      ? 'claude /exit --dangerously-skip-permissions'
-      : 'claude /login --dangerously-skip-permissions';
+    return 'claude --dangerously-skip-permissions /login';
   }
 
   if (provider === 'cursor') {
@@ -84,13 +76,12 @@ export default function ProviderLoginModal({
   onComplete,
   customCommand,
   isAuthenticated = false,
-  isOnboarding = false,
 }: ProviderLoginModalProps) {
   if (!isOpen) {
     return null;
   }
 
-  const command = getProviderCommand({ provider, customCommand, isAuthenticated, isOnboarding });
+  const command = getProviderCommand({ provider, customCommand, isAuthenticated });
   const title = getProviderTitle(provider);
   const shellProject = normalizeProject(project);
 

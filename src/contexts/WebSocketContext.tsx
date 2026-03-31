@@ -30,6 +30,7 @@ const buildWebSocketUrl = (token: string | null) => {
 const useWebSocketProviderState = (): WebSocketContextType => {
   const wsRef = useRef<WebSocket | null>(null);
   const unmountedRef = useRef(false); // Track if component is unmounted
+  const hasConnectedRef = useRef(false); // Track if we've ever connected (to detect reconnects)
   const [latestMessage, setLatestMessage] = useState<any>(null);
   const [isConnected, setIsConnected] = useState(false);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -50,6 +51,11 @@ const useWebSocketProviderState = (): WebSocketContextType => {
         console.log('[WS] Connected successfully');
         setIsConnected(true);
         wsRef.current = websocket;
+        if (hasConnectedRef.current) {
+          // This is a reconnect — signal so components can catch up on missed messages
+          setLatestMessage({ type: 'websocket-reconnected', timestamp: Date.now() });
+        }
+        hasConnectedRef.current = true;
       };
 
       websocket.onmessage = (event) => {

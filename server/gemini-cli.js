@@ -6,14 +6,15 @@ const spawnFunction = process.platform === 'win32' ? crossSpawn : spawn;
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
-import { getSessions, getSessionMessages } from './projects.js';
 import sessionManager from './sessionManager.js';
 import GeminiResponseHandler from './gemini-response-handler.js';
+import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
+import { createNormalizedMessage } from './providers/types.js';
 
 let activeGeminiProcesses = new Map(); // Track active processes by session ID
 
 async function spawnGemini(command, options = {}, ws) {
-    const { sessionId, projectPath, cwd, resume, toolsSettings, permissionMode, images } = options;
+    const { sessionId, projectPath, cwd, toolsSettings, permissionMode, images, sessionSummary } = options;
     let capturedSessionId = sessionId; // Track session ID throughout the process
     let sessionCreatedSent = false; // Track if we've already sent session-created event
     let assistantBlocks = []; // Accumulate the full response blocks including tools
@@ -172,6 +173,36 @@ async function spawnGemini(command, options = {}, ws) {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env } // Inherit all environment variables
         });
+        let terminalNotificationSent = false;
+        let terminalFailureReason = null;
+
+        const notifyTerminalState = ({ code = null, error = null } = {}) => {
+            if (terminalNotificationSent) {
+                return;
+            }
+
+            terminalNotificationSent = true;
+
+            const finalSessionId = capturedSessionId || sessionId || processKey;
+            if (code === 0 && !error) {
+                notifyRunStopped({
+                    userId: ws?.userId || null,
+                    provider: 'gemini',
+                    sessionId: finalSessionId,
+                    sessionName: sessionSummary,
+                    stopReason: 'completed'
+                });
+                return;
+            }
+
+            notifyRunFailed({
+                userId: ws?.userId || null,
+                provider: 'gemini',
+                sessionId: finalSessionId,
+                sessionName: sessionSummary,
+                error: error || terminalFailureReason || `Gemini CLI exited with code ${code}`
+            });
+        };
 
         // Attach temp file info to process for cleanup later
         geminiProcess.tempImagePaths = tempImagePaths;
@@ -188,7 +219,6 @@ async function spawnGemini(command, options = {}, ws) {
         geminiProcess.stdin.end();
 
         // Add timeout handler
-        let hasReceivedOutput = false;
         const timeoutMs = 120000; // 120 seconds for slower models
         let timeout;
 
@@ -196,11 +226,8 @@ async function spawnGemini(command, options = {}, ws) {
             if (timeout) clearTimeout(timeout);
             timeout = setTimeout(() => {
                 const socketSessionId = typeof ws.getSessionId === 'function' ? ws.getSessionId() : (capturedSessionId || sessionId || processKey);
-                ws.send({
-                    type: 'gemini-error',
-                    sessionId: socketSessionId,
-                    error: `Gemini CLI timeout - no response received for ${timeoutMs / 1000} seconds`
-                });
+                terminalFailureReason = `Gemini CLI timeout - no response received for ${timeoutMs / 1000} seconds`;
+                ws.send(createNormalizedMessage({ kind: 'error', content: terminalFailureReason, sessionId: socketSessionId, provider: 'gemini' }));
                 try {
                     geminiProcess.kill('SIGTERM');
                 } catch (e) { }
@@ -262,7 +289,6 @@ async function spawnGemini(command, options = {}, ws) {
         // Handle stdout
         geminiProcess.stdout.on('data', (data) => {
             const rawOutput = data.toString();
-            hasReceivedOutput = true;
             startTimeout(); // Re-arm the timeout
 
             // For new sessions, create a session ID FIRST
@@ -286,21 +312,7 @@ async function spawnGemini(command, options = {}, ws) {
 
                 ws.setSessionId && typeof ws.setSessionId === 'function' && ws.setSessionId(capturedSessionId);
 
-                ws.send({
-                    type: 'session-created',
-                    sessionId: capturedSessionId
-                });
-
-                // Emit fake system init so the frontend immediately navigates and saves the session
-                ws.send({
-                    type: 'claude-response',
-                    sessionId: capturedSessionId,
-                    data: {
-                        type: 'system',
-                        subtype: 'init',
-                        session_id: capturedSessionId
-                    }
-                });
+                ws.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'gemini' }));
             }
 
             if (responseHandler) {
@@ -313,14 +325,7 @@ async function spawnGemini(command, options = {}, ws) {
                     assistantBlocks.push({ type: 'text', text: rawOutput });
                 }
                 const socketSessionId = typeof ws.getSessionId === 'function' ? ws.getSessionId() : (capturedSessionId || sessionId);
-                ws.send({
-                    type: 'gemini-response',
-                    sessionId: socketSessionId,
-                    data: {
-                        type: 'message',
-                        content: rawOutput
-                    }
-                });
+                ws.send(createNormalizedMessage({ kind: 'stream_delta', content: rawOutput, sessionId: socketSessionId, provider: 'gemini' }));
             }
         });
 
@@ -337,11 +342,7 @@ async function spawnGemini(command, options = {}, ws) {
             }
 
             const socketSessionId = typeof ws.getSessionId === 'function' ? ws.getSessionId() : (capturedSessionId || sessionId);
-            ws.send({
-                type: 'gemini-error',
-                sessionId: socketSessionId,
-                error: errorMsg
-            });
+            ws.send(createNormalizedMessage({ kind: 'error', content: errorMsg, sessionId: socketSessionId, provider: 'gemini' }));
         });
 
         // Handle process completion
@@ -363,12 +364,7 @@ async function spawnGemini(command, options = {}, ws) {
                 sessionManager.addMessage(finalSessionId, 'assistant', assistantBlocks);
             }
 
-            ws.send({
-                type: 'claude-complete', // Use claude-complete for compatibility with UI
-                sessionId: finalSessionId,
-                exitCode: code,
-                isNewSession: !sessionId && !!command // Flag to indicate this was a new session
-            });
+            ws.send(createNormalizedMessage({ kind: 'complete', exitCode: code, isNewSession: !sessionId && !!command, sessionId: finalSessionId, provider: 'gemini' }));
 
             // Clean up temporary image files if any
             if (geminiProcess.tempImagePaths && geminiProcess.tempImagePaths.length > 0) {
@@ -381,8 +377,13 @@ async function spawnGemini(command, options = {}, ws) {
             }
 
             if (code === 0) {
+                notifyTerminalState({ code });
                 resolve();
             } else {
+                notifyTerminalState({
+                    code,
+                    error: code === null ? 'Gemini CLI process was terminated or timed out' : null
+                });
                 reject(new Error(code === null ? 'Gemini CLI process was terminated or timed out' : `Gemini CLI exited with code ${code}`));
             }
         });
@@ -394,11 +395,8 @@ async function spawnGemini(command, options = {}, ws) {
             activeGeminiProcesses.delete(finalSessionId);
 
             const errorSessionId = typeof ws.getSessionId === 'function' ? ws.getSessionId() : finalSessionId;
-            ws.send({
-                type: 'gemini-error',
-                sessionId: errorSessionId,
-                error: error.message
-            });
+            ws.send(createNormalizedMessage({ kind: 'error', content: error.message, sessionId: errorSessionId, provider: 'gemini' }));
+            notifyTerminalState({ error });
 
             reject(error);
         });
