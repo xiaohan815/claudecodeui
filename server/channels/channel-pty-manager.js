@@ -119,7 +119,6 @@ function makeSessionKey(channelName, chatId) {
  */
 async function getLastAssistantMessage(sessionId) {
   if (!sessionId) {
-    console.log('[ChannelPTY] No session ID, cannot read messages');
     return null;
   }
 
@@ -131,12 +130,11 @@ async function getLastAssistantMessage(sessionId) {
     try {
       await fs.promises.access(projectsDir);
     } catch (error) {
-      console.log('[ChannelPTY] Projects directory does not exist:', projectsDir);
+      console.log('[ChannelPTY] Projects directory not found');
       return null;
     }
 
     const projects = await fs.promises.readdir(projectsDir);
-    console.log(`[ChannelPTY] Searching ${projects.length} projects for session ${sessionId}`);
 
     for (const projectName of projects) {
       const projectDir = path.join(projectsDir, projectName);
@@ -147,12 +145,9 @@ async function getLastAssistantMessage(sessionId) {
       // Read all JSONL files in this project
       const files = await fs.promises.readdir(projectDir);
       const jsonlFiles = files.filter(file => file.endsWith('.jsonl') && !file.startsWith('agent-'));
-      
-      console.log(`[ChannelPTY] Project ${projectName}: found ${jsonlFiles.length} JSONL files`);
 
       for (const file of jsonlFiles) {
         const jsonlPath = path.join(projectDir, file);
-        console.log(`[ChannelPTY] Reading JSONL file: ${jsonlPath}`);
         
         const fileStream = fs.createReadStream(jsonlPath);
         const rl = readline.createInterface({
@@ -161,25 +156,19 @@ async function getLastAssistantMessage(sessionId) {
         });
 
         const messages = [];
-        let lineCount = 0;
         
         for await (const line of rl) {
-          lineCount++;
           if (line.trim()) {
             try {
               const entry = JSON.parse(line);
               if (entry.sessionId === sessionId) {
                 messages.push(entry);
-                console.log(`[ChannelPTY] Found matching message at line ${lineCount}, type: ${entry.type}, role: ${entry.message?.role}, stop_reason: ${entry.message?.stop_reason || 'N/A'}`);
               }
             } catch (parseError) {
               // Skip malformed lines
-              console.log(`[ChannelPTY] Skipping malformed line ${lineCount}`);
             }
           }
         }
-
-        console.log(`[ChannelPTY] File ${file}: found ${messages.length} messages for session ${sessionId}`);
 
         // Find the last assistant message
         for (let i = messages.length - 1; i >= 0; i--) {
@@ -187,8 +176,6 @@ async function getLastAssistantMessage(sessionId) {
           if (msg.message?.role === 'assistant' && msg.message?.content) {
             const stopReason = msg.message.stop_reason || 'unknown';
             const hasMoreSteps = stopReason === 'tool_use';
-            
-            console.log(`[ChannelPTY] Last assistant message stop_reason: ${stopReason}, hasMoreSteps: ${hasMoreSteps}`);
             
             // Extract text content from assistant message
             if (Array.isArray(msg.message.content)) {
@@ -198,17 +185,14 @@ async function getLastAssistantMessage(sessionId) {
               
               if (textParts.length > 0) {
                 const content = textParts.join('\n');
-                console.log('[ChannelPTY] Found last assistant message from JSONL:', content.substring(0, 100));
                 return { content, stopReason, hasMoreSteps };
               }
               
               // If no text content but has tool_use, it means AI is executing tools
               if (hasMoreSteps) {
-                console.log('[ChannelPTY] Assistant is executing tools, no text content yet');
                 return { content: '', stopReason, hasMoreSteps };
               }
             } else if (typeof msg.message.content === 'string') {
-              console.log('[ChannelPTY] Found last assistant message from JSONL:', msg.message.content.substring(0, 100));
               return { content: msg.message.content, stopReason, hasMoreSteps };
             }
           }
@@ -216,10 +200,9 @@ async function getLastAssistantMessage(sessionId) {
       }
     }
 
-    console.log('[ChannelPTY] No assistant message found in JSONL files for session:', sessionId);
     return null;
   } catch (error) {
-    console.error('[ChannelPTY] Error reading last assistant message:', error);
+    console.error('[ChannelPTY] Error reading JSONL:', error.message);
     return null;
   }
 }
@@ -451,16 +434,7 @@ async function getOrCreateSession(channelName, chatId, config = {}) {
 
   // Handle PTY data
   ptyProcess.onData((data) => {
-    // Only log significant data chunks (> 100 bytes) to reduce noise
-    if (data.length > 100) {
-      console.log(`[ChannelPTY] Received data chunk (${data.length} bytes)`);
-    }
     session.outputBuffer += data;
-    
-    // Only log buffer size periodically (every 500 bytes)
-    if (session.outputBuffer.length % 500 < data.length) {
-      console.log(`[ChannelPTY] Output buffer size: ${session.outputBuffer.length} bytes`);
-    }
 
     // Try to extract session ID from startup output
     if (!session.claudeSessionId && session.status === 'starting') {
@@ -484,24 +458,19 @@ async function getOrCreateSession(channelName, chatId, config = {}) {
       
       // Check for prompt
       if (hasPrompt(session.outputBuffer)) {
-        console.log(`[ChannelPTY] Prompt detected, starting stable window timer (${PROMPT_STABLE_WINDOW_MS}ms)`);
-        
         // Set a new stable window timer
         // This timer resets every time new data arrives
         // Only when no new data for PROMPT_STABLE_WINDOW_MS, we extract the response
         session.stableWindowTimer = setTimeout(async () => {
           if (session.pendingResolvers.length > 0 && hasPrompt(session.outputBuffer)) {
-            console.log(`[ChannelPTY] Stable window confirmed (no new data for ${PROMPT_STABLE_WINDOW_MS}ms)`);
+            console.log(`[ChannelPTY] Response complete, processing...`);
             
             // Instead of parsing PTY output, read from JSONL file
-            console.log(`[ChannelPTY] Reading response from JSONL file for session: ${session.claudeSessionId}`);
             const result = await getLastAssistantMessage(session.claudeSessionId);
             
             if (result && result.hasMoreSteps) {
               // AI is still executing tools, wait for next prompt
-              console.log(`[ChannelPTY] AI is executing tools (stop_reason: ${result.stopReason}), waiting for next step...`);
-              console.log(`[ChannelPTY] Resolver still in queue, will continue monitoring PTY output`);
-              console.log(`[ChannelPTY] Current pending resolvers: ${session.pendingResolvers.length}`);
+              console.log(`[ChannelPTY] Tool execution in progress, waiting...`);
               session.outputBuffer = '';
               session.stableWindowTimer = null;
               // Don't resolve yet, keep the resolver in the queue
@@ -519,7 +488,7 @@ async function getOrCreateSession(channelName, chatId, config = {}) {
             }
             
             if (result && result.content) {
-              console.log(`[ChannelPTY] Got final content from JSONL (${result.content.length} chars): ${result.content.substring(0, 200)}`);
+              console.log(`[ChannelPTY] Response received (${result.content.length} chars)`);
               session.outputBuffer = '';
               session.status = 'idle';
               session.lastActiveAt = new Date();
@@ -527,31 +496,25 @@ async function getOrCreateSession(channelName, chatId, config = {}) {
               resolver.resolve({ content: result.content, sessionId: session.claudeSessionId });
             } else if (result && !result.content && !result.hasMoreSteps) {
               // No content but also no more steps - might be an error
-              console.log(`[ChannelPTY] No content from JSONL and no more steps, falling back to PTY output parsing`);
+              console.log(`[ChannelPTY] No content from JSONL, using fallback`);
               const fallbackContent = extractResponse(session.outputBuffer);
-              console.log(`[ChannelPTY] Fallback content (${fallbackContent.length} chars): ${fallbackContent.substring(0, 200)}`);
               session.outputBuffer = '';
               session.status = 'idle';
               session.lastActiveAt = new Date();
               session.stableWindowTimer = null;
               resolver.resolve({ content: fallbackContent, sessionId: session.claudeSessionId });
             } else {
-              console.log(`[ChannelPTY] No content from JSONL, falling back to PTY output parsing`);
+              console.log(`[ChannelPTY] JSONL read failed, using fallback`);
               // Fallback to PTY output parsing if JSONL read fails
               const fallbackContent = extractResponse(session.outputBuffer);
-              console.log(`[ChannelPTY] Fallback content (${fallbackContent.length} chars): ${fallbackContent.substring(0, 200)}`);
               session.outputBuffer = '';
               session.status = 'idle';
               session.lastActiveAt = new Date();
               session.stableWindowTimer = null;
               resolver.resolve({ content: fallbackContent, sessionId: session.claudeSessionId });
             }
-          } else {
-            console.log(`[ChannelPTY] Stable window expired but conditions not met (resolvers: ${session.pendingResolvers.length}, hasPrompt: ${hasPrompt(session.outputBuffer)})`);
           }
         }, PROMPT_STABLE_WINDOW_MS);
-      } else {
-        console.log(`[ChannelPTY] Waiting for prompt (buffer size: ${session.outputBuffer.length})`);
       }
     }
   });
