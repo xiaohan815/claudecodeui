@@ -589,7 +589,7 @@ async function getOrCreateSession(channelName, chatId, config = {}) {
   }
   
   // Add permission bypass for channel automation (auto-approve all tool uses)
-  shellCommand += ' --permission-mode bypassPermissions';
+  shellCommand += ' --dangerously-skip-permissions';
 
   console.log(`[ChannelPTY] Shell command: ${shellCommand}`);
 
