@@ -179,6 +179,10 @@ i18n
       bindI18nStore: false, // Don't re-render on resource changes
     },
 
+    // Suppress promotional messages
+    appendNamespaceToCIMode: false,
+    appendNamespaceToMissingKey: false,
+
     // Detection options
     detection: {
       // Order of language detection (local storage first)

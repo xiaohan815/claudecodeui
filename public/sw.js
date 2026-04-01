@@ -21,6 +21,7 @@ self.addEventListener('fetch', event => {
 
   // Never intercept API requests or WebSocket upgrades
   if (url.includes('/api/') || url.includes('/ws')) {
+    event.respondWith(fetch(event.request));
     return;
   }
 
