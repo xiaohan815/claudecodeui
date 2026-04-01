@@ -6,7 +6,7 @@
   "type": "channel",
   "entry": "index.js",
   "server": "server.js",
-  "icon": "MessageSquare",
+  "icon": "icon.svg",
   "slot": "tab",
   "permissions": []
 }
