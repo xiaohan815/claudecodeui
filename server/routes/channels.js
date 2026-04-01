@@ -54,8 +54,152 @@ const router = express.Router();
 const VALID_PROVIDERS = ["claude", "cursor", "codex", "gemini"];
 const VALID_CHAT_TYPES = ["p2p", "group"];
 
+// Feishu API helpers
+const TOKEN_REFRESH_BUFFER_MS = 60_000;
+const feishuTokenCache = new Map(); // channelName -> { token, expiresAt }
+
+async function getFeishuToken(config) {
+  const cacheKey = `${config.appId}:${config.appSecret}`;
+  const cached = feishuTokenCache.get(cacheKey);
+  
+  if (cached && cached.expiresAt - TOKEN_REFRESH_BUFFER_MS > Date.now()) {
+    return cached.token;
+  }
+
+  const openBase = normalizeFeishuDomain(config.domain);
+  const response = await fetch(`${openBase}/open-apis/auth/v3/tenant_access_token/internal`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+    body: JSON.stringify({
+      app_id: config.appId,
+      app_secret: config.appSecret,
+    }),
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload || payload.code !== 0 || !payload.tenant_access_token) {
+    throw new Error(`Failed to get Feishu token: ${payload?.msg || response.statusText}`);
+  }
+
+  const token = payload.tenant_access_token;
+  const expiresAt = Date.now() + Number(payload.expire || 0) * 1000;
+  
+  feishuTokenCache.set(cacheKey, { token, expiresAt });
+  return token;
+}
+
+function normalizeFeishuDomain(domain) {
+  const normalized = String(domain || "feishu").trim().toLowerCase();
+  if (normalized === "lark") return "https://open.larksuite.com";
+  if (normalized.startsWith("http://") || normalized.startsWith("https://")) {
+    return normalized.replace(/\/+$/, "");
+  }
+  return "https://open.feishu.cn";
+}
+
+function chunkFeishuText(text, limit = 1800) {
+  if (text.length <= limit) return [text];
+  
+  const chunks = [];
+  let remaining = text;
+  while (remaining.length > limit) {
+    const paragraphBreak = remaining.lastIndexOf("\n\n", limit);
+    const lineBreak = remaining.lastIndexOf("\n", limit);
+    const spaceBreak = remaining.lastIndexOf(" ", limit);
+    const cut =
+      paragraphBreak > limit / 2 ? paragraphBreak :
+      lineBreak > limit / 2 ? lineBreak :
+      spaceBreak > 0 ? spaceBreak : limit;
+    chunks.push(remaining.slice(0, cut));
+    remaining = remaining.slice(cut).replace(/^\s+/, "");
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+async function pushToFeishu(config, chatId, text) {
+  const token = await getFeishuToken(config);
+  const openBase = normalizeFeishuDomain(config.domain);
+  const chunks = chunkFeishuText(text);
+  
+  for (const chunk of chunks) {
+    const response = await fetch(`${openBase}/open-apis/im/v1/messages?receive_id_type=chat_id`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        receive_id: chatId,
+        msg_type: "text",
+        content: JSON.stringify({ text: chunk }),
+        uuid: crypto.randomUUID(),
+      }),
+    });
+
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload || payload.code !== 0) {
+      throw new Error(`Feishu API error: ${payload?.msg || response.statusText}`);
+    }
+  }
+}
+
+async function pushToIMessage(chatId, text) {
+  const { spawn } = await import('child_process');
+  
+  const SEND_SCRIPT = `on run argv
+  tell application "Messages" to send (item 1 of argv) to chat id (item 2 of argv)
+end run`;
+
+  const MAX_CHUNK = 10000;
+  const chunks = [];
+  
+  if (text.length <= MAX_CHUNK) {
+    chunks.push(text);
+  } else {
+    let rest = text;
+    while (rest.length > MAX_CHUNK) {
+      const para = rest.lastIndexOf('\n\n', MAX_CHUNK);
+      const line = rest.lastIndexOf('\n', MAX_CHUNK);
+      const space = rest.lastIndexOf(' ', MAX_CHUNK);
+      const cut = para > MAX_CHUNK / 2 ? para : line > MAX_CHUNK / 2 ? line : space > 0 ? space : MAX_CHUNK;
+      chunks.push(rest.slice(0, cut));
+      rest = rest.slice(cut).replace(/^\n+/, '');
+    }
+    if (rest) chunks.push(rest);
+  }
+
+  for (const chunk of chunks) {
+    await new Promise((resolve, reject) => {
+      const proc = spawn('osascript', ['-', chunk, chatId], {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+      
+      proc.stdin.write(SEND_SCRIPT);
+      proc.stdin.end();
+      
+      let stderr = '';
+      proc.stderr.on('data', data => stderr += data.toString());
+      
+      proc.on('close', code => {
+        if (code !== 0) {
+          reject(new Error(`osascript exit ${code}: ${stderr.trim()}`));
+        } else {
+          resolve();
+        }
+      });
+      
+      proc.on('error', reject);
+    });
+  }
+}
+
 function isFeishuChannel(channelName) {
   return channelName === "feishu-channel";
+}
+
+function isIMessageChannel(channelName) {
+  return channelName === "imessage-channel";
 }
 
 function normalizeAllowedChatTypes(value) {
@@ -905,6 +1049,38 @@ router.post("/message", authenticateToken, async (req, res) => {
       // Persist session ID
       if (newSessionId) {
         channelSessionsDb.setSession(channelName, externalChatId, newSessionId);
+      }
+
+      // Set up proactive callback for scheduled tasks
+      // This callback will be called when Claude CLI generates output without a request
+      if (isFeishuChannel(channelName)) {
+        const feishuConfig = channelConfigDb.getConfig(channelName, { includeSecrets: true });
+        
+        channelPtyManager.setProactiveCallback(channelName, externalChatId, async (data) => {
+          console.log(`[ChannelPTY] Proactive message detected for ${channelName}:${externalChatId}`);
+          console.log(`[ChannelPTY] Content: ${data.content.substring(0, 100)}...`);
+          
+          // Push directly to Feishu API
+          try {
+            await pushToFeishu(feishuConfig, data.chatId, data.content);
+            console.log(`[ChannelPTY] Proactive message pushed to Feishu successfully`);
+          } catch (error) {
+            console.error(`[ChannelPTY] Failed to push proactive message to Feishu:`, error.message);
+          }
+        });
+      } else if (isIMessageChannel(channelName)) {
+        channelPtyManager.setProactiveCallback(channelName, externalChatId, async (data) => {
+          console.log(`[ChannelPTY] Proactive message detected for ${channelName}:${externalChatId}`);
+          console.log(`[ChannelPTY] Content: ${data.content.substring(0, 100)}...`);
+          
+          // Push directly to iMessage via AppleScript
+          try {
+            await pushToIMessage(data.chatId, data.content);
+            console.log(`[ChannelPTY] Proactive message pushed to iMessage successfully`);
+          } catch (error) {
+            console.error(`[ChannelPTY] Failed to push proactive message to iMessage:`, error.message);
+          }
+        });
       }
 
       return res.json({ content, sessionId: newSessionId });

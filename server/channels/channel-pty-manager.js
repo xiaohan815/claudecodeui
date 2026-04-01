@@ -66,6 +66,8 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
  *   cwd: string,
  *   createdAt: Date,
  *   lastActiveAt: Date,
+ *   lastProcessedMessageIndex: number,  // Track last processed message to detect new ones
+ *   proactiveCallback: Function | null,  // Callback for proactive push
  * }
  */
 
@@ -109,6 +111,155 @@ function stripAnsi(text) {
  */
 function makeSessionKey(channelName, chatId) {
   return `${channelName}:${chatId}`;
+}
+
+/**
+ * Read all assistant messages from session JSONL files
+ * Returns array of messages with their indices
+ * 
+ * @returns {Array<Object>} Array of { index, content, stopReason }
+ */
+async function getAllAssistantMessages(sessionId) {
+  if (!sessionId) {
+    return [];
+  }
+
+  try {
+    const projectsDir = path.join(os.homedir(), '.claude', 'projects');
+    
+    try {
+      await fs.promises.access(projectsDir);
+    } catch (error) {
+      return [];
+    }
+
+    const projects = await fs.promises.readdir(projectsDir);
+
+    for (const projectName of projects) {
+      const projectDir = path.join(projectsDir, projectName);
+      const stat = await fs.promises.stat(projectDir);
+      
+      if (!stat.isDirectory()) continue;
+
+      const files = await fs.promises.readdir(projectDir);
+      const jsonlFiles = files.filter(file => file.endsWith('.jsonl') && !file.startsWith('agent-'));
+
+      for (const file of jsonlFiles) {
+        const jsonlPath = path.join(projectDir, file);
+        
+        const fileStream = fs.createReadStream(jsonlPath);
+        const rl = readline.createInterface({
+          input: fileStream,
+          crlfDelay: Infinity
+        });
+
+        const messages = [];
+        let lineIndex = 0;
+        
+        for await (const line of rl) {
+          if (line.trim()) {
+            try {
+              const entry = JSON.parse(line);
+              if (entry.sessionId === sessionId) {
+                messages.push({ ...entry, lineIndex });
+              }
+            } catch (parseError) {
+              // Skip malformed lines
+            }
+          }
+          lineIndex++;
+        }
+
+        if (messages.length === 0) continue;
+
+        // Extract all assistant messages
+        const assistantMessages = [];
+        for (let i = 0; i < messages.length; i++) {
+          const msg = messages[i];
+          if (msg.message?.role === 'assistant' && msg.message?.content) {
+            const stopReason = msg.message.stop_reason || 'unknown';
+            
+            // Extract text content
+            if (Array.isArray(msg.message.content)) {
+              const textParts = msg.message.content
+                .filter(part => part.type === 'text' && part.text)
+                .map(part => part.text);
+              
+              if (textParts.length > 0) {
+                assistantMessages.push({
+                  index: i,
+                  content: textParts.join('\n'),
+                  stopReason,
+                });
+              }
+            } else if (typeof msg.message.content === 'string') {
+              assistantMessages.push({
+                index: i,
+                content: msg.message.content,
+                stopReason,
+              });
+            }
+          }
+        }
+
+        if (assistantMessages.length > 0) {
+          return assistantMessages;
+        }
+      }
+    }
+
+    return [];
+  } catch (error) {
+    console.error('[ChannelPTY] Error reading all messages:', error.message);
+    return [];
+  }
+}
+
+/**
+ * Check for proactive messages (scheduled tasks)
+ * Called when session is idle and receives new output
+ */
+async function checkForProactiveMessage(session) {
+  if (!session.claudeSessionId) {
+    session.outputBuffer = '';
+    session.stableWindowTimer = null;
+    return;
+  }
+
+  // Get all assistant messages
+  const allMessages = await getAllAssistantMessages(session.claudeSessionId);
+  
+  if (allMessages.length === 0) {
+    session.outputBuffer = '';
+    session.stableWindowTimer = null;
+    return;
+  }
+
+  // Check if there's a new message since last check
+  const lastMessage = allMessages[allMessages.length - 1];
+  
+  if (lastMessage.index > session.lastProcessedMessageIndex) {
+    console.log(`[ChannelPTY] Proactive message detected for ${session.key}`);
+    
+    // Update last processed index
+    session.lastProcessedMessageIndex = lastMessage.index;
+    
+    // Call proactive callback if set
+    if (session.proactiveCallback) {
+      try {
+        await session.proactiveCallback({
+          chatId: session.chatId,
+          content: lastMessage.content,
+          sessionId: session.claudeSessionId,
+        });
+      } catch (error) {
+        console.error(`[ChannelPTY] Proactive callback error:`, error.message);
+      }
+    }
+  }
+
+  session.outputBuffer = '';
+  session.stableWindowTimer = null;
 }
 
 /**
@@ -428,6 +579,8 @@ async function getOrCreateSession(channelName, chatId, config = {}) {
     cwd,
     createdAt: new Date(),
     lastActiveAt: new Date(),
+    lastProcessedMessageIndex: -1,  // Track last processed message
+    proactiveCallback: null,  // Callback for proactive push
   };
 
   channelPtySessions.set(key, session);
@@ -446,6 +599,22 @@ async function getOrCreateSession(channelName, chatId, config = {}) {
       if (sessionMatch) {
         session.claudeSessionId = sessionMatch[1];
         console.log(`[ChannelPTY] Extracted session ID: ${session.claudeSessionId}`);
+      }
+    }
+
+    // Check for proactive messages (scheduled tasks) when idle
+    if (session.status === 'idle' && session.pendingResolvers.length === 0) {
+      // Clear any existing stable window timer
+      if (session.stableWindowTimer) {
+        clearTimeout(session.stableWindowTimer);
+      }
+      
+      // Check for prompt
+      if (hasPrompt(session.outputBuffer)) {
+        // Set a stable window timer for proactive detection
+        session.stableWindowTimer = setTimeout(async () => {
+          await checkForProactiveMessage(session);
+        }, PROMPT_STABLE_WINDOW_MS);
       }
     }
 
@@ -489,6 +658,13 @@ async function getOrCreateSession(channelName, chatId, config = {}) {
             
             if (result && result.content) {
               console.log(`[ChannelPTY] Response received (${result.content.length} chars)`);
+              
+              // Update lastProcessedMessageIndex to track this message
+              const allMessages = await getAllAssistantMessages(session.claudeSessionId);
+              if (allMessages.length > 0) {
+                session.lastProcessedMessageIndex = allMessages[allMessages.length - 1].index;
+              }
+              
               session.outputBuffer = '';
               session.status = 'idle';
               session.lastActiveAt = new Date();
@@ -794,6 +970,24 @@ function listSessions(channelName) {
   return sessions;
 }
 
+/**
+ * Set proactive callback for a session
+ * This callback will be called when scheduled tasks generate new messages
+ */
+function setProactiveCallback(channelName, chatId, callback) {
+  const key = makeSessionKey(channelName, chatId);
+  const session = channelPtySessions.get(key);
+
+  if (!session) {
+    console.log(`[ChannelPTY] Cannot set proactive callback: session ${key} not found`);
+    return false;
+  }
+
+  session.proactiveCallback = callback;
+  console.log(`[ChannelPTY] Proactive callback set for session ${key}`);
+  return true;
+}
+
 export {
   getOrCreateSession,
   sendMessage,
@@ -802,4 +996,5 @@ export {
   getSessionStatus,
   listSessions,
   setIdleTimeout,
+  setProactiveCallback,
 };
