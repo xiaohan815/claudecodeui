@@ -263,6 +263,53 @@ async function checkForProactiveMessage(session) {
 }
 
 /**
+ * Find session ID by looking for the most recently modified JSONL file in the project directory
+ * This is useful when session ID is not extracted from PTY output
+ */
+async function findLatestSessionId(cwd) {
+  try {
+    const projectsDir = path.join(os.homedir(), '.claude', 'projects');
+    
+    // Normalize cwd to match project directory name
+    // Claude CLI replaces both / and _ with -
+    const normalizedCwd = cwd.replace(/^\//, '').replace(/[/_]/g, '-');
+    const projectDir = path.join(projectsDir, `-${normalizedCwd}`);
+    
+    try {
+      await fs.promises.access(projectDir);
+    } catch (error) {
+      return null;
+    }
+
+    const files = await fs.promises.readdir(projectDir);
+    const jsonlFiles = files.filter(file => file.endsWith('.jsonl') && !file.startsWith('agent-'));
+    
+    if (jsonlFiles.length === 0) return null;
+
+    // Get file stats and sort by modification time
+    const fileStats = await Promise.all(
+      jsonlFiles.map(async (file) => {
+        const filePath = path.join(projectDir, file);
+        const stat = await fs.promises.stat(filePath);
+        return { file, mtime: stat.mtime };
+      })
+    );
+
+    // Sort by modification time (newest first)
+    fileStats.sort((a, b) => b.mtime - a.mtime);
+
+    // Extract session ID from filename (remove .jsonl extension)
+    const latestFile = fileStats[0].file;
+    const sessionId = latestFile.replace('.jsonl', '');
+    
+    return sessionId;
+  } catch (error) {
+    console.error('[ChannelPTY] Error finding latest session ID:', error.message);
+    return null;
+  }
+}
+
+/**
  * Read the last assistant message from session JSONL files
  * This is more reliable than parsing PTY output
  * 
@@ -635,7 +682,16 @@ async function getOrCreateSession(channelName, chatId, config = {}) {
             console.log(`[ChannelPTY] Response complete, processing...`);
             
             // Instead of parsing PTY output, read from JSONL file
-            const result = await getLastAssistantMessage(session.claudeSessionId);
+            // Try to get session ID from: 1) session object, 2) find latest JSONL file
+            let sessionIdToUse = session.claudeSessionId;
+            if (!sessionIdToUse) {
+              sessionIdToUse = await findLatestSessionId(session.cwd);
+              if (sessionIdToUse) {
+                session.claudeSessionId = sessionIdToUse;
+              }
+            }
+            
+            const result = sessionIdToUse ? await getLastAssistantMessage(sessionIdToUse) : null;
             
             if (result && result.hasMoreSteps) {
               // AI is still executing tools, wait for next prompt
