@@ -16,6 +16,7 @@ import { getOrCreateChannelServiceToken, initializeSystemUser } from './token-ma
 import { startMCPClient, stopMCPClient, isMCPConnected } from './mcp-manager.js';
 import { gate, AccessPolicy } from './access-control.js';
 import { channelConfigDb } from '../database/db.js';
+import * as channelPtyManager from './channel-pty-manager.js';
 
 const CHANNEL_TYPE = 'channel';
 
@@ -173,6 +174,9 @@ export async function stopChannel(channelName) {
   try {
     // Stop MCP client
     await stopMCPClient(channelName);
+
+    // Destroy all PTY sessions for this channel
+    channelPtyManager.destroyChannelSessions(channelName);
 
     // Revoke service token
     // Note: Token revocation is handled in token-manager

@@ -16,6 +16,7 @@ import { spawnCursor } from "../cursor-cli.js";
 import { spawnGemini } from "../gemini-cli.js";
 import { queryCodex } from "../openai-codex.js";
 import { channelSessionsDb, channelConfigDb } from "../database/db.js";
+import * as channelPtyManager from "../channels/channel-pty-manager.js";
 import { 
   builtInHandlers, 
   isKnownCommand, 
@@ -435,7 +436,7 @@ router.get("/:name/config", authenticateToken, async (req, res) => {
 router.post("/:name/config", authenticateToken, async (req, res) => {
   try {
     const { name } = req.params;
-    const { cwd, provider, model, appId, appSecret, domain, botName, allowedChatTypes } = req.body;
+    const { cwd, provider, model, appId, appSecret, domain, botName, allowedChatTypes, usePersistentPty, ptyIdleTimeoutMinutes } = req.body;
 
     const channel = getChannel(name);
     if (!channel) {
@@ -464,6 +465,10 @@ router.post("/:name/config", authenticateToken, async (req, res) => {
     const oldConfig = channelConfigDb.getConfig(name, { includeSecrets: true });
     const cwdChanged = cwd !== undefined && cwd !== oldConfig.cwd;
     const providerChanged = provider !== undefined && provider !== oldConfig.provider;
+    const ptyConfigChanged = 
+      (usePersistentPty !== undefined && usePersistentPty !== oldConfig.usePersistentPty) ||
+      (ptyIdleTimeoutMinutes !== undefined && ptyIdleTimeoutMinutes !== oldConfig.ptyIdleTimeoutMinutes);
+    
     const nextFeishuConfig = {
       appId:
         appId === undefined ? oldConfig.appId : String(appId || "").trim(),
@@ -506,11 +511,15 @@ router.post("/:name/config", authenticateToken, async (req, res) => {
       botName: isFeishuChannel(name) ? nextFeishuConfig.botName : undefined,
       allowedChatTypes:
         isFeishuChannel(name) ? nextFeishuConfig.allowedChatTypes : undefined,
+      usePersistentPty,
+      ptyIdleTimeoutMinutes,
     });
     console.log(`[Channels] Config updated for ${name}:`, {
       cwd,
       provider,
       model,
+      usePersistentPty,
+      ptyIdleTimeoutMinutes,
       ...(isFeishuChannel(name)
         ? {
             appId: nextFeishuConfig.appId || null,
@@ -527,6 +536,12 @@ router.post("/:name/config", authenticateToken, async (req, res) => {
       console.log(
         `[Channels] Cleared ${cleared} session(s) for ${name} due to config change (cwd=${cwdChanged}, provider=${providerChanged})`,
       );
+    }
+
+    // If PTY config changed, destroy all PTY sessions
+    if (ptyConfigChanged) {
+      channelPtyManager.destroyChannelSessions(name);
+      console.log(`[Channels] Destroyed PTY sessions for ${name} due to PTY config change`);
     }
 
     if (feishuConfigChanged && channel.status === "running") {
@@ -865,6 +880,41 @@ router.post("/message", authenticateToken, async (req, res) => {
       ? channelSessionsDb.getSession(channelName, externalChatId) || undefined
       : undefined;
 
+  const CHANNEL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+  // Check if PTY mode is enabled for this channel
+  if (config.usePersistentPty && provider === "claude") {
+    console.log(
+      `[ChannelMessage] Using PTY mode for ${channelName} | chat:${externalChatId} | session:${existingSessionId || "NEW"}`,
+    );
+
+    try {
+      const { content, sessionId: newSessionId } = await channelPtyManager.sendMessage(
+        channelName,
+        externalChatId,
+        prompt,
+        {
+          cwd,
+          model,
+          timeoutMs: CHANNEL_TIMEOUT_MS,
+          claudeSessionId: existingSessionId,
+          idleTimeoutMinutes: config.ptyIdleTimeoutMinutes || 30,
+        }
+      );
+
+      // Persist session ID
+      if (newSessionId) {
+        channelSessionsDb.setSession(channelName, externalChatId, newSessionId);
+      }
+
+      return res.json({ content, sessionId: newSessionId });
+    } catch (err) {
+      console.error(`[ChannelPTY] Error for ${channelName}:`, err.message);
+      return res.status(500).json({ error: err.message || 'PTY query failed' });
+    }
+  }
+
+  // Fallback to SDK mode (existing implementation)
   const writer = new ChannelResponseWriter();
 
   console.log(
@@ -951,7 +1001,6 @@ router.post("/message", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: `Unknown provider: ${provider}` });
     }
 
-    const CHANNEL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
     const timeoutPromise = new Promise((_, reject) =>
       setTimeout(
         () => reject(new Error("Channel message timeout after 5 minutes")),

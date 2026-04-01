@@ -229,6 +229,8 @@ const runMigrations = () => {
       domain       TEXT,
       bot_name     TEXT,
       allowed_chat_types TEXT,
+      use_persistent_pty INTEGER NOT NULL DEFAULT 0,
+      pty_idle_timeout_minutes INTEGER NOT NULL DEFAULT 30,
       updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
     for (const migration of [
@@ -237,6 +239,8 @@ const runMigrations = () => {
       "ALTER TABLE channel_config ADD COLUMN domain TEXT",
       "ALTER TABLE channel_config ADD COLUMN bot_name TEXT",
       "ALTER TABLE channel_config ADD COLUMN allowed_chat_types TEXT",
+      "ALTER TABLE channel_config ADD COLUMN use_persistent_pty INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE channel_config ADD COLUMN pty_idle_timeout_minutes INTEGER NOT NULL DEFAULT 30",
     ]) {
       try {
         db.exec(migration);
@@ -1080,7 +1084,7 @@ const channelConfigDb = {
     try {
       const row = db
         .prepare(
-          "SELECT cwd, provider, model, app_id, app_secret, domain, bot_name, allowed_chat_types FROM channel_config WHERE channel_name = ?",
+          "SELECT cwd, provider, model, app_id, app_secret, domain, bot_name, allowed_chat_types, use_persistent_pty, pty_idle_timeout_minutes FROM channel_config WHERE channel_name = ?",
         )
         .get(channelName);
       const allowedChatTypes = (() => {
@@ -1103,6 +1107,8 @@ const channelConfigDb = {
         domain: row?.domain || "feishu",
         botName: row?.bot_name || "",
         allowedChatTypes,
+        usePersistentPty: Boolean(row?.use_persistent_pty),
+        ptyIdleTimeoutMinutes: row?.pty_idle_timeout_minutes || 30,
         ...(options.includeSecrets
           ? { appSecret: row?.app_secret || "" }
           : { hasAppSecret: Boolean(row?.app_secret) }),
@@ -1115,12 +1121,12 @@ const channelConfigDb = {
   // Upsert config for a channel
   setConfig: (
     channelName,
-    { cwd, provider, model, appId, appSecret, domain, botName, allowedChatTypes },
+    { cwd, provider, model, appId, appSecret, domain, botName, allowedChatTypes, usePersistentPty, ptyIdleTimeoutMinutes },
   ) => {
     try {
       const existing = db
         .prepare(
-          "SELECT app_id, app_secret, domain, bot_name, allowed_chat_types FROM channel_config WHERE channel_name = ?",
+          "SELECT app_id, app_secret, domain, bot_name, allowed_chat_types, use_persistent_pty, pty_idle_timeout_minutes FROM channel_config WHERE channel_name = ?",
         )
         .get(channelName);
       const normalizedAllowedChatTypes = Array.isArray(allowedChatTypes)
@@ -1145,9 +1151,11 @@ const channelConfigDb = {
           domain,
           bot_name,
           allowed_chat_types,
+          use_persistent_pty,
+          pty_idle_timeout_minutes,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(channel_name)
         DO UPDATE SET
           cwd                = excluded.cwd,
@@ -1158,6 +1166,8 @@ const channelConfigDb = {
           domain             = excluded.domain,
           bot_name           = excluded.bot_name,
           allowed_chat_types = excluded.allowed_chat_types,
+          use_persistent_pty = excluded.use_persistent_pty,
+          pty_idle_timeout_minutes = excluded.pty_idle_timeout_minutes,
           updated_at         = CURRENT_TIMESTAMP
       `,
       ).run(
@@ -1172,6 +1182,8 @@ const channelConfigDb = {
         allowedChatTypes === undefined
           ? existing?.allowed_chat_types || '["p2p"]'
           : finalAllowedChatTypes,
+        usePersistentPty === undefined ? existing?.use_persistent_pty || 0 : usePersistentPty ? 1 : 0,
+        ptyIdleTimeoutMinutes === undefined ? existing?.pty_idle_timeout_minutes || 30 : ptyIdleTimeoutMinutes,
       );
       return true;
     } catch (err) {

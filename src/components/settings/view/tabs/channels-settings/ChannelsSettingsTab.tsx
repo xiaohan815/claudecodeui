@@ -1,3 +1,16 @@
+/**
+ * Channels Settings Tab
+ * 
+ * 这是设置弹窗中的 Channels 配置页面（Settings → Channels）。
+ * 用于管理所有已安装的 channels（feishu-channel, imessage-channel 等）。
+ * 
+ * 与 feishu-channel/index.js 的区别：
+ * - 本文件（ChannelsSettingsTab.tsx）：设置弹窗，管理所有 channels 的通用配置界面
+ * - feishu-channel/index.js：Feishu Channel 的主页面（Plugin Tab），专用配置界面
+ * 
+ * 两个文件都包含 PTY 配置，但本文件是通用的 channel 配置界面。
+ */
+
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -40,6 +53,8 @@ interface ChannelConfigDraft {
   botName: string;
   allowedChatTypes: string[];
   hasAppSecret: boolean;
+  usePersistentPty: boolean;
+  ptyIdleTimeoutMinutes: number;
 }
 
 const DEFAULT_CONFIG: ChannelConfigDraft = {
@@ -52,6 +67,8 @@ const DEFAULT_CONFIG: ChannelConfigDraft = {
   botName: '',
   allowedChatTypes: ['p2p'],
   hasAppSecret: false,
+  usePersistentPty: false,
+  ptyIdleTimeoutMinutes: 30,
 };
 
 const FIELD_CLASS =
@@ -141,6 +158,8 @@ function ChannelsSettingsTab() {
               ? config.allowedChatTypes
               : ['p2p'],
           hasAppSecret: Boolean(config.hasAppSecret),
+          usePersistentPty: Boolean(config.usePersistentPty),
+          ptyIdleTimeoutMinutes: config.ptyIdleTimeoutMinutes || 30,
         },
       }));
     } catch (error) {
@@ -264,6 +283,8 @@ function ChannelsSettingsTab() {
         cwd: selectedConfig.cwd.trim() || null,
         provider: selectedConfig.provider,
         model: selectedConfig.model.trim() || null,
+        usePersistentPty: selectedConfig.usePersistentPty,
+        ptyIdleTimeoutMinutes: selectedConfig.ptyIdleTimeoutMinutes,
       };
 
       if (isFeishuSelected) {
@@ -303,6 +324,8 @@ function ChannelsSettingsTab() {
               ? nextConfig.allowedChatTypes
               : ['p2p'],
           hasAppSecret: Boolean(nextConfig.hasAppSecret),
+          usePersistentPty: Boolean(nextConfig.usePersistentPty),
+          ptyIdleTimeoutMinutes: nextConfig.ptyIdleTimeoutMinutes || 30,
         },
       }));
       setConfigStatus(data.restarted ? 'Configuration saved and channel restarted.' : 'Configuration saved.');
@@ -691,6 +714,60 @@ function ChannelsSettingsTab() {
                               </label>
                             ))}
                           </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {selectedConfig.provider === 'claude' && (
+                      <div className="rounded-2xl border border-purple-500/15 bg-purple-500/5 p-4">
+                        <div className="mb-4">
+                          <h5 className="text-sm font-semibold text-foreground">
+                            Advanced Settings
+                          </h5>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            Performance optimization for Claude provider
+                          </p>
+                        </div>
+
+                        <div className="space-y-4">
+                          <label className="flex items-start gap-3">
+                            <input
+                              type="checkbox"
+                              checked={selectedConfig.usePersistentPty}
+                              onChange={(e) => updateSelectedConfig({ usePersistentPty: e.target.checked })}
+                              className="mt-0.5 h-4 w-4 rounded border-border text-primary focus:ring-primary"
+                            />
+                            <div className="flex-1">
+                              <div className="text-sm font-medium text-foreground">
+                                Persistent PTY Mode
+                              </div>
+                              <p className="mt-1 text-sm text-muted-foreground">
+                                Maintain a background Claude process for each conversation to reduce startup overhead. 
+                                Session history stays in memory instead of being reloaded from disk on every message.
+                              </p>
+                            </div>
+                          </label>
+
+                          {selectedConfig.usePersistentPty && (
+                            <div className="ml-7 mt-3">
+                              <label className="mb-2 block text-sm font-medium text-foreground">
+                                Idle Timeout (minutes)
+                              </label>
+                              <input
+                                type="number"
+                                min="1"
+                                max="120"
+                                value={selectedConfig.ptyIdleTimeoutMinutes}
+                                onChange={(e) => updateSelectedConfig({ 
+                                  ptyIdleTimeoutMinutes: Math.max(1, Math.min(120, parseInt(e.target.value) || 30))
+                                })}
+                                className={FIELD_CLASS + ' w-32'}
+                              />
+                              <p className="mt-2 text-xs text-muted-foreground">
+                                Background processes will be terminated after this period of inactivity
+                              </p>
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}

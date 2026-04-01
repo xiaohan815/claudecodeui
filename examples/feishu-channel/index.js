@@ -2,6 +2,13 @@
  * Feishu / Lark Channel — Browser-side control panel
  * Pure ES Module, no external dependencies.
  * Loaded by PluginTabContent via Blob URL in the browser.
+ * 
+ * 注意：这是 Feishu Channel 的主页面（Plugin Tab），显示在主界面的 "Feishu Channel" 标签页中。
+ * 与 ChannelsSettingsTab.tsx 的区别：
+ * - 本文件（index.js）：主页面，用户可以直接在这里配置和管理 Feishu Channel
+ * - ChannelsSettingsTab.tsx：设置弹窗，在 Settings → Channels 中，用于管理所有 channels
+ * 
+ * 两个文件都包含 PTY 配置，但本文件是 Feishu Channel 专用的配置界面。
  */
 
 const CHANNEL_NAME = "feishu-channel";
@@ -141,6 +148,20 @@ function buildStyles(isDark) {
     .fsc-btn-danger { background:${danger}; color:${dangerTxt}; border:1px solid ${dangerTxt}44; }
     .fsc-btn-danger:not(:disabled):hover { opacity:.8; }
 
+    /* PTY advanced card */
+    .fsc-pty-card { background:${isDark ? "rgba(139,92,246,0.08)" : "rgba(139,92,246,0.05)"}; border:1px solid ${isDark ? "rgba(139,92,246,0.25)" : "rgba(139,92,246,0.18)"}; border-radius:12px; padding:20px; }
+    .fsc-pty-title { font-size:14px; font-weight:600; color:${text}; }
+    .fsc-pty-subtitle { font-size:12px; color:${muted}; margin-top:3px; margin-bottom:14px; }
+    .fsc-pty-check-label { display:flex; align-items:flex-start; gap:10px; cursor:pointer; }
+    .fsc-pty-check-label input[type=checkbox] { accent-color:${accent}; width:15px; height:15px; margin-top:2px; flex-shrink:0; cursor:pointer; }
+    .fsc-pty-check-name { font-size:13px; font-weight:500; color:${text}; }
+    .fsc-pty-check-desc { font-size:12px; color:${muted}; margin-top:3px; line-height:1.5; }
+    .fsc-pty-timeout-row { display:flex; align-items:center; gap:10px; margin-top:14px; margin-left:25px; }
+    .fsc-pty-timeout-row .fsc-field-label { margin-bottom:0; white-space:nowrap; }
+    .fsc-input-number { width:72px; background:${inputBg}; border:1px solid ${border}; border-radius:7px; padding:6px 10px; font-size:13px; color:${text}; outline:none; }
+    .fsc-input-number:focus { border-color:${accent}; }
+    .fsc-pty-timeout-hint { font-size:11px; color:${muted}; }
+
     /* Toast */
     .fsc-toast { position:fixed; bottom:24px; right:24px; padding:10px 18px; border-radius:8px; font-size:13px; font-weight:500; background:${surface}; border:1px solid ${border}; box-shadow:0 4px 16px #0006; z-index:9999; animation:fsc-fadein .2s ease; }
     .fsc-toast.ok  { border-color:${success}; color:${success}; }
@@ -166,6 +187,9 @@ let state = {
   domain: "feishu",
   botName: "",
   allowedChatTypes: ["p2p"],
+  // PTY advanced
+  usePersistentPty: false,
+  ptyIdleTimeoutMinutes: 30,
   // Loaded from API
   models: null,
   modelDefaults: null,
@@ -335,6 +359,36 @@ function render(container, isDark) {
         </div>
       </div>
 
+      <!-- Advanced / PTY settings (Claude only) -->
+      ${
+        s.provider === "claude"
+          ? `
+      <div class="fsc-pty-card">
+        <div class="fsc-pty-title">高级设置</div>
+        <div class="fsc-pty-subtitle">Claude 性能优化选项</div>
+        <label class="fsc-pty-check-label">
+          <input type="checkbox" class="fsc-pty-checkbox" ${s.usePersistentPty ? "checked" : ""} />
+          <div>
+            <div class="fsc-pty-check-name">持久化终端模式（Persistent PTY）</div>
+            <div class="fsc-pty-check-desc">为每个对话维持一个后台 Claude 进程，减少每轮对话的启动开销。对话历史常驻内存，无需每次从磁盘重载。</div>
+          </div>
+        </label>
+        ${
+          s.usePersistentPty
+            ? `
+        <div class="fsc-pty-timeout-row">
+          <span class="fsc-field-label">空闲超时（分钟）</span>
+          <input class="fsc-input-number fsc-pty-timeout-input" type="number" min="1" max="120" value="${s.ptyIdleTimeoutMinutes}" />
+          <span class="fsc-pty-timeout-hint">后台进程在无活动后自动销毁</span>
+        </div>
+        `
+            : ""
+        }
+      </div>
+      `
+          : ""
+      }
+
       <!-- Save -->
       <div class="fsc-actions">
         <button class="fsc-btn fsc-btn-primary fsc-btn-save" ${s.saving ? "disabled" : ""}>
@@ -424,6 +478,22 @@ function attachEvents(container, isDark) {
   if (groupEl)
     groupEl.addEventListener("change", () => toggleChatType("group"));
 
+  // PTY advanced
+  const ptyCheckbox = container.querySelector(".fsc-pty-checkbox");
+  if (ptyCheckbox)
+    ptyCheckbox.addEventListener("change", (e) => {
+      state.usePersistentPty = e.target.checked;
+      render(container, isDark);
+    });
+
+  const ptyTimeoutEl = container.querySelector(".fsc-pty-timeout-input");
+  if (ptyTimeoutEl)
+    ptyTimeoutEl.addEventListener("input", (e) => {
+      const v = parseInt(e.target.value, 10);
+      if (!isNaN(v))
+        state.ptyIdleTimeoutMinutes = Math.max(1, Math.min(120, v));
+    });
+
   // Action buttons
   const saveBtn = container.querySelector(".fsc-btn-save");
   if (saveBtn)
@@ -469,6 +539,8 @@ async function saveConfig(container, isDark) {
       domain: state.domain,
       botName: state.botName.trim() || null,
       allowedChatTypes: state.allowedChatTypes,
+      usePersistentPty: state.usePersistentPty,
+      ptyIdleTimeoutMinutes: state.ptyIdleTimeoutMinutes,
     };
     if (state.appSecretInput.trim()) {
       payload.appSecret = state.appSecretInput.trim();
@@ -558,6 +630,9 @@ async function loadConfig() {
       Array.isArray(cfg.allowedChatTypes) && cfg.allowedChatTypes.length > 0
         ? cfg.allowedChatTypes
         : ["p2p"];
+    // PTY advanced
+    state.usePersistentPty = !!cfg.usePersistentPty;
+    state.ptyIdleTimeoutMinutes = cfg.ptyIdleTimeoutMinutes || 30;
   } catch {}
 }
 
