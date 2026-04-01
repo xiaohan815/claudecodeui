@@ -255,7 +255,7 @@ function chunkText(text) {
 }
 
 async function sendText(chatId, text) {
-  await feishuJsonFetch("/open-apis/im/v1/messages?receive_id_type=chat_id", {
+  const response = await feishuJsonFetch("/open-apis/im/v1/messages?receive_id_type=chat_id", {
     method: "POST",
     headers: {
       "Content-Type": "application/json; charset=utf-8",
@@ -265,6 +265,22 @@ async function sendText(chatId, text) {
       msg_type: "text",
       content: JSON.stringify({ text }),
       uuid: crypto.randomUUID(),
+    }),
+  });
+  
+  // Return the message_id for later updates
+  return response.message_id;
+}
+
+async function updateMessage(messageId, text) {
+  await feishuJsonFetch(`/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({
+      msg_type: "text",
+      content: JSON.stringify({ text }),
     }),
   });
 }
@@ -277,12 +293,23 @@ async function sendReply(chatId, text) {
 }
 
 async function sendToAI({ chatId, senderId, text, images }) {
-  if (inFlightChats.get(chatId)) {
-    process.stderr.write(`[Feishu] Skipping ${chatId} — previous request in flight\n`);
-    return;
-  }
+  // Remove the in-flight check - let PTY handle queueing
+  // if (inFlightChats.get(chatId)) {
+  //   process.stderr.write(`[Feishu] Skipping ${chatId} — previous request in flight\n`);
+  //   return;
+  // }
 
-  inFlightChats.set(chatId, true);
+  // inFlightChats.set(chatId, true);
+  
+  // Send "processing" message first
+  let processingMessageId = null;
+  try {
+    processingMessageId = await sendText(chatId, "🤖 正在思考中...");
+    process.stderr.write(`[Feishu] Sent processing message: ${processingMessageId}\n`);
+  } catch (error) {
+    process.stderr.write(`[Feishu] Failed to send processing message: ${error.message}\n`);
+  }
+  
   try {
     const response = await fetch(`${API_ENDPOINT}/channels/message`, {
       method: "POST",
@@ -303,7 +330,13 @@ async function sendToAI({ chatId, senderId, text, images }) {
       process.stderr.write(
         `[Feishu] Channel API error ${response.status}: ${body || response.statusText}\n`,
       );
-      await sendText(chatId, "AI 服务暂时不可用，请稍后重试。");
+      
+      // Update processing message with error
+      if (processingMessageId) {
+        await updateMessage(processingMessageId, "❌ AI 服务暂时不可用，请稍后重试。");
+      } else {
+        await sendText(chatId, "❌ AI 服务暂时不可用，请稍后重试。");
+      }
       return;
     }
 
@@ -311,19 +344,39 @@ async function sendToAI({ chatId, senderId, text, images }) {
     const reply = String(payload.content || "").trim();
     if (!reply) {
       process.stderr.write(`[Feishu] Empty AI response for ${chatId}\n`);
+      if (processingMessageId) {
+        await updateMessage(processingMessageId, "❌ AI 返回了空响应");
+      }
       return;
     }
 
-    await sendReply(chatId, reply);
+    // Update processing message with final result
+    if (processingMessageId) {
+      const chunks = chunkText(reply);
+      // Update the first chunk to the processing message
+      await updateMessage(processingMessageId, chunks[0]);
+      // Send remaining chunks as new messages
+      for (let i = 1; i < chunks.length; i++) {
+        await sendText(chatId, chunks[i]);
+      }
+    } else {
+      // Fallback: send as new messages
+      await sendReply(chatId, reply);
+    }
   } catch (error) {
     process.stderr.write(`[Feishu] sendToAI error: ${error.message}\n`);
     try {
-      await sendText(chatId, "AI 服务暂时不可用，请稍后重试。");
+      if (processingMessageId) {
+        await updateMessage(processingMessageId, "❌ AI 服务暂时不可用，请稍后重试。");
+      } else {
+        await sendText(chatId, "❌ AI 服务暂时不可用，请稍后重试。");
+      }
     } catch {
     }
-  } finally {
-    inFlightChats.delete(chatId);
   }
+  // finally {
+  //   inFlightChats.delete(chatId);
+  // }
 }
 
 async function handleIncomingEvent(event) {

@@ -368,13 +368,11 @@ function hasPrompt(text) {
   
   // Check for Claude prompt (❯)
   if (CLAUDE_PROMPT_PATTERN.test(cleaned)) {
-    console.log('[ChannelPTY] Claude prompt (❯) detected');
     return true;
   }
   
   // Try fallback prompt
   if (FALLBACK_PROMPT_PATTERN.test(cleaned)) {
-    console.log('[ChannelPTY] Fallback prompt detected');
     return true;
   }
   
@@ -479,12 +477,9 @@ async function getOrCreateSession(channelName, chatId, config = {}) {
 
     // Check if we have pending resolvers
     if (session.pendingResolvers.length > 0) {
-      console.log(`[ChannelPTY] Have ${session.pendingResolvers.length} pending resolver(s), checking for prompt...`);
-      
       // Clear any existing stable window timer
       if (session.stableWindowTimer) {
         clearTimeout(session.stableWindowTimer);
-        console.log(`[ChannelPTY] Cleared existing stable window timer`);
       }
       
       // Check for prompt
@@ -516,6 +511,12 @@ async function getOrCreateSession(channelName, chatId, config = {}) {
             
             const resolver = session.pendingResolvers.shift();
             if (resolver.timer) clearTimeout(resolver.timer);
+            
+            // Skip queued messages in the resolver list
+            while (session.pendingResolvers.length > 0 && session.pendingResolvers[0].type === 'queued') {
+              // Don't process queued messages here, they will be processed by processNextQueuedMessage
+              break;
+            }
             
             if (result && result.content) {
               console.log(`[ChannelPTY] Got final content from JSONL (${result.content.length} chars): ${result.content.substring(0, 200)}`);
@@ -634,9 +635,35 @@ async function sendMessage(channelName, chatId, prompt, options = {}) {
     throw new Error('PTY session is dead');
   }
 
+  // Improved queueing mechanism
   if (session.status === 'busy') {
-    console.log(`[ChannelPTY] Session is busy`);
-    throw new Error('PTY session is busy');
+    console.log(`[ChannelPTY] Session is busy, queueing message (current queue size: ${session.pendingResolvers.length})`);
+    
+    // Add to queue and wait
+    return new Promise((resolve, reject) => {
+      const queueTimer = setTimeout(() => {
+        console.log(`[ChannelPTY] Queued message timeout after ${timeoutMs}ms`);
+        reject(new Error('Timeout waiting for session to become available'));
+      }, timeoutMs);
+      
+      // Add a special queue entry
+      session.pendingResolvers.push({
+        type: 'queued',
+        prompt,
+        options,
+        resolve: (result) => {
+          clearTimeout(queueTimer);
+          resolve(result);
+        },
+        reject: (error) => {
+          clearTimeout(queueTimer);
+          reject(error);
+        },
+        timer: queueTimer,
+      });
+      
+      console.log(`[ChannelPTY] Message queued, total pending: ${session.pendingResolvers.length}`);
+    });
   }
 
   console.log(`[ChannelPTY] Session status: ${session.status}`);
@@ -664,20 +691,67 @@ async function sendMessage(channelName, chatId, prompt, options = {}) {
         session.pendingResolvers.splice(index, 1);
       }
       session.status = 'idle';
+      
+      // Process next queued message if any
+      processNextQueuedMessage(session);
+      
       reject(new Error('PTY response timeout'));
     }, timeoutMs);
 
     session.pendingResolvers.push({ 
+      type: 'active',
       resolve: (result) => {
         console.log(`[ChannelPTY] Response received, setting idle timeout to ${idleTimeoutMinutes} minutes`);
         // Set idle timeout after successful response
         setIdleTimeout(session, idleTimeoutMinutes);
+        
+        // Process next queued message if any
+        processNextQueuedMessage(session);
+        
         resolve(result);
       }, 
-      reject, 
+      reject: (error) => {
+        // Process next queued message even on error
+        processNextQueuedMessage(session);
+        reject(error);
+      },
       timer 
     });
     console.log(`[ChannelPTY] Added resolver to pending queue (total: ${session.pendingResolvers.length})`);
+  });
+}
+
+/**
+ * Process the next queued message if any
+ */
+function processNextQueuedMessage(session) {
+  // Find the first queued message
+  const queuedIndex = session.pendingResolvers.findIndex(r => r.type === 'queued');
+  
+  if (queuedIndex === -1) {
+    console.log(`[ChannelPTY] No queued messages, session going idle`);
+    return;
+  }
+  
+  const queued = session.pendingResolvers[queuedIndex];
+  session.pendingResolvers.splice(queuedIndex, 1);
+  
+  console.log(`[ChannelPTY] Processing queued message: "${queued.prompt.substring(0, 50)}"`);
+  console.log(`[ChannelPTY] Remaining queued messages: ${session.pendingResolvers.filter(r => r.type === 'queued').length}`);
+  
+  // Process the queued message
+  setImmediate(async () => {
+    try {
+      const result = await sendMessage(
+        session.channelName,
+        session.chatId,
+        queued.prompt,
+        queued.options
+      );
+      queued.resolve(result);
+    } catch (error) {
+      queued.reject(error);
+    }
   });
 }
 
