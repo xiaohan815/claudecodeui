@@ -967,9 +967,13 @@ router.post("/message", authenticateToken, async (req, res) => {
             
             const result = await handler(args, context);
             
-            // Special handling for /clear: delete session
+            // Special handling for /clear: delete session AND destroy PTY session
             if (commandName === '/clear') {
               channelSessionsDb.deleteSession(channelName, externalChatId);
+              // Also destroy the PTY session to start fresh
+              const ptyKey = `${channelName}:${externalChatId}`;
+              channelPtyManager.destroySession(ptyKey);
+              console.log(`[ChannelMessage] Cleared session and destroyed PTY for ${ptyKey}`);
             }
             
             // Format response for channel

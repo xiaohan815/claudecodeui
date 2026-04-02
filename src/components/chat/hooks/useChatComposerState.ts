@@ -60,6 +60,7 @@ interface UseChatComposerStateArgs {
   setClaudeStatus: (status: { text: string; tokens: number; can_interrupt: boolean } | null) => void;
   setIsUserScrolledUp: (isScrolledUp: boolean) => void;
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
+  setCurrentSessionId: (sessionId: string | null) => void;
 }
 
 interface MentionableFile {
@@ -132,6 +133,7 @@ export function useChatComposerState({
   setClaudeStatus,
   setIsUserScrolledUp,
   setPendingPermissionRequests,
+  setCurrentSessionId,
 }: UseChatComposerStateArgs) {
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
@@ -158,6 +160,16 @@ export function useChatComposerState({
       switch (action) {
         case 'clear':
           clearMessages();
+          // Reset current session ID to start a new session
+          setCurrentSessionId(null);
+          // Notify backend to clear session (important for PTY mode)
+          if (currentSessionId) {
+            sendMessage({
+              type: 'clear-session',
+              sessionId: currentSessionId,
+              provider,
+            });
+          }
           break;
 
         case 'help':
@@ -232,7 +244,7 @@ export function useChatComposerState({
           console.warn('Unknown built-in command action:', action);
       }
     },
-    [onFileOpen, onShowSettings, addMessage, clearMessages, rewindMessages],
+    [onFileOpen, onShowSettings, addMessage, clearMessages, rewindMessages, setCurrentSessionId, currentSessionId, sendMessage, provider],
   );
 
   const handleCustomCommand = useCallback(async (result: CommandExecutionResult) => {

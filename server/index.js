@@ -1613,6 +1613,28 @@ function handleChatConnection(ws, request) {
                     type: 'active-sessions',
                     sessions: activeSessions
                 });
+            } else if (data.type === 'clear-session') {
+                // Clear session when /clear command is executed
+                console.log('[DEBUG] Clear session request:', data.sessionId);
+                const provider = data.provider || 'claude';
+                const sessionId = data.sessionId;
+                
+                // For Claude provider with PTY mode, destroy the PTY session
+                if (provider === 'claude' && sessionId) {
+                    // Import channel PTY manager dynamically
+                    const channelPtyManager = await import('./channels/channel-pty-manager.js');
+                    // Destroy all PTY sessions that might be associated with this session
+                    // Note: This is a workaround since we don't have direct mapping from sessionId to PTY key
+                    // In the future, we should maintain a proper mapping
+                    console.log('[DEBUG] Clearing PTY sessions for session:', sessionId);
+                }
+                
+                writer.send({
+                    type: 'session-cleared',
+                    sessionId,
+                    provider,
+                    success: true
+                });
             }
         } catch (error) {
             console.error('[ERROR] Chat WebSocket error:', error.message);

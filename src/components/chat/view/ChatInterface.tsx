@@ -201,6 +201,7 @@ function ChatInterface({
     setClaudeStatus,
     setIsUserScrolledUp,
     setPendingPermissionRequests,
+    setCurrentSessionId,
   });
 
   // On WebSocket reconnect, re-fetch the current session's messages from the server
