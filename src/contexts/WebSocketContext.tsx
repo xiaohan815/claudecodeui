@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useAuth } from '../components/auth/context/AuthContext';
 import { AUTH_TOKEN_STORAGE_KEY } from '../components/auth/constants';
 import { IS_PLATFORM } from '../constants/config';
+import { parseWebSocketJsonMessage } from '../utils/websocket';
 
 type WebSocketContextType = {
   ws: WebSocket | null;
@@ -46,6 +47,7 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       
       console.log('[WS] Connecting with token:', currentToken?.substring(0, 30) + '...');
       const websocket = new WebSocket(wsUrl);
+      websocket.binaryType = 'arraybuffer';
 
       websocket.onopen = () => {
         console.log('[WS] Connected successfully');
@@ -58,9 +60,12 @@ const useWebSocketProviderState = (): WebSocketContextType => {
         hasConnectedRef.current = true;
       };
 
-      websocket.onmessage = (event) => {
+      websocket.onmessage = async (event) => {
         try {
-          const data = JSON.parse(event.data);
+          const data = await parseWebSocketJsonMessage(event.data);
+          if (!data) {
+            return;
+          }
           setLatestMessage(data);
         } catch (error) {
           console.error('Error parsing WebSocket message:', error);
