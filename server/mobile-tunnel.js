@@ -43,6 +43,18 @@ function getServerName(localBaseUrl) {
     return process.env.MOBILE_SERVER_NAME || os.hostname() || new URL(localBaseUrl).host;
 }
 
+function getClientInfo() {
+    return {
+        hostname: os.hostname(),
+        platform: os.platform(),
+        arch: os.arch(),
+        pid: process.pid,
+        cwd: process.cwd(),
+        mobileServerIdEnv: process.env.MOBILE_SERVER_ID || '',
+        mobileServerNameEnv: process.env.MOBILE_SERVER_NAME || '',
+    };
+}
+
 function createLocalFetchUrl(localBaseUrl, requestPath) {
     const base = new URL(localBaseUrl);
     const url = new URL(requestPath || '/', base);
@@ -196,12 +208,19 @@ export function startMobileTunnel({ localBaseUrl }) {
         }
 
         ws.on('open', () => {
-            console.log(`[MobileTunnel] Connected to ${mobileUrl}`);
+            const clientInfo = getClientInfo();
+            console.log(`[MobileTunnel] Connected to ${mobileUrl}`, {
+                serverId,
+                serverName,
+                localBaseUrl: normalizedLocalBaseUrl,
+                ...clientInfo,
+            });
             ws.send(JSON.stringify({
                 type: 'register',
                 id: serverId,
                 name: serverName,
                 localBaseUrl: normalizedLocalBaseUrl,
+                clientInfo,
                 token: sharedToken,
             }));
 
