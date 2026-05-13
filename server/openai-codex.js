@@ -249,12 +249,15 @@ export async function queryCodex(command, options = {}, ws) {
       startedAt: new Date().toISOString()
     });
 
-    // Send session created event
-    console.log('[SessionDebug][Codex] sending session_created:', {
-      newSessionId: currentSessionId,
-      sessionId: currentSessionId,
-    });
-    sendMessage(ws, createNormalizedMessage({ kind: 'session_created', newSessionId: currentSessionId, sessionId: currentSessionId, provider: 'codex' }));
+    // Send session_created only for a genuinely new chat. Resume calls already
+    // have a concrete selected session on the frontend.
+    if (!sessionId) {
+      console.log('[SessionDebug][Codex] sending session_created:', {
+        newSessionId: currentSessionId,
+        sessionId: currentSessionId,
+      });
+      sendMessage(ws, createNormalizedMessage({ kind: 'session_created', newSessionId: currentSessionId, sessionId: currentSessionId, provider: 'codex' }));
+    }
 
     // Execute with streaming
     const streamedTurn = await thread.runStreamed(command, {

@@ -140,19 +140,15 @@ function normalizeComparableText(value: string | undefined): string {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
-function isOptimisticUserEchoDuplicate(
+function isComparableTextDuplicate(
   serverMessage: NormalizedMessage,
   realtimeMessage: NormalizedMessage,
 ): boolean {
-  if (!realtimeMessage.id.startsWith('local_')) {
-    return false;
-  }
-
   if (serverMessage.kind !== 'text' || realtimeMessage.kind !== 'text') {
     return false;
   }
 
-  if (serverMessage.role !== 'user' || realtimeMessage.role !== 'user') {
+  if (serverMessage.role !== realtimeMessage.role) {
     return false;
   }
 
@@ -169,6 +165,29 @@ function isOptimisticUserEchoDuplicate(
   return Math.abs(serverTime - realtimeTime) <= 60_000;
 }
 
+function isServerBackedRealtimeDuplicate(
+  serverMessage: NormalizedMessage,
+  realtimeMessage: NormalizedMessage,
+): boolean {
+  if (
+    realtimeMessage.role === 'user' &&
+    realtimeMessage.id.startsWith('local_') &&
+    isComparableTextDuplicate(serverMessage, realtimeMessage)
+  ) {
+    return true;
+  }
+
+  if (
+    realtimeMessage.role === 'assistant' &&
+    realtimeMessage.id.startsWith('text_') &&
+    isComparableTextDuplicate(serverMessage, realtimeMessage)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function pruneOptimisticDuplicates(
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
@@ -179,12 +198,13 @@ function pruneOptimisticDuplicates(
 
   return realtimeMessages.filter((realtimeMessage) => {
     const isDuplicate = serverMessages.some((serverMessage) =>
-      isOptimisticUserEchoDuplicate(serverMessage, realtimeMessage),
+      isServerBackedRealtimeDuplicate(serverMessage, realtimeMessage),
     );
     if (isDuplicate) {
-      console.log('[SessionDebug][Store] pruned optimistic duplicate user message', {
+      console.log('[SessionDebug][Store] pruned realtime duplicate message', {
         realtimeMessageId: realtimeMessage.id,
         sessionId: realtimeMessage.sessionId,
+        role: realtimeMessage.role || null,
         contentPreview: normalizeComparableText(realtimeMessage.content).slice(0, 80),
       });
     }

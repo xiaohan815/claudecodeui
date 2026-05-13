@@ -1,5 +1,9 @@
 import { useCallback, useState } from 'react';
 
+function isTemporarySessionId(sessionId: string): boolean {
+  return sessionId.startsWith('new-session-') || /^codex-\d+$/.test(sessionId);
+}
+
 export function useSessionProtection() {
   const [activeSessions, setActiveSessions] = useState<Set<string>>(new Set());
   const [processingSessions, setProcessingSessions] = useState<Set<string>>(new Set());
@@ -52,11 +56,21 @@ export function useSessionProtection() {
     setActiveSessions((prev) => {
       const next = new Set<string>();
       for (const sessionId of prev) {
-        if (!sessionId.startsWith('new-session-')) {
+        if (!isTemporarySessionId(sessionId)) {
           next.add(sessionId);
         }
       }
       next.add(realSessionId);
+      return next;
+    });
+
+    setProcessingSessions((prev) => {
+      const next = new Set<string>();
+      for (const sessionId of prev) {
+        if (!isTemporarySessionId(sessionId)) {
+          next.add(sessionId);
+        }
+      }
       return next;
     });
   }, []);
