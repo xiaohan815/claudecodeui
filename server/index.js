@@ -67,6 +67,7 @@ import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
 import channelsRoutes from './routes/channels.js';
 import messagesRoutes from './routes/messages.js';
+import { startMobileTunnel } from './mobile-tunnel.js';
 import { createNormalizedMessage } from './providers/types.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './database/db.js';
@@ -2581,6 +2582,10 @@ async function startServer() {
             console.log(`${c.info('[INFO]')} Installed at: ${c.dim(appInstallPath)}`);
             console.log(`${c.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
             console.log('');
+
+            startMobileTunnel({
+                localBaseUrl: `http://127.0.0.1:${SERVER_PORT}`
+            });
 
             // Start watching the projects folder for changes
             await setupProjectsWatcher();
