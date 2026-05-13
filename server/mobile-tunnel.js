@@ -4,6 +4,7 @@ import { WebSocket } from 'ws';
 const HEARTBEAT_INTERVAL_MS = 10_000;
 const RECONNECT_INTERVAL_MS = 5_000;
 const HTTP_REQUEST_TIMEOUT_MS = 60_000;
+const MAX_PENDING_WS_MESSAGES = 100;
 
 function normalizeMobileUrl(rawUrl) {
     if (!rawUrl) return null;
@@ -97,9 +98,13 @@ function createLocalWebSocket(localBaseUrl, socketId, requestPath, tunnelWs) {
     base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
     const targetUrl = new URL(requestPath || '/ws', base);
     const upstream = new WebSocket(targetUrl);
+    const pendingMessages = [];
 
     upstream.on('open', () => {
         tunnelWs.send(JSON.stringify({ type: 'ws-open', socketId }));
+        while (pendingMessages.length > 0 && upstream.readyState === WebSocket.OPEN) {
+            upstream.send(pendingMessages.shift());
+        }
     });
 
     upstream.on('message', (data) => {
@@ -121,6 +126,20 @@ function createLocalWebSocket(localBaseUrl, socketId, requestPath, tunnelWs) {
             error: error.message || 'Local websocket error',
         }));
     });
+
+    upstream.enqueueOrSend = (data) => {
+        if (upstream.readyState === WebSocket.OPEN) {
+            upstream.send(data);
+            return;
+        }
+
+        if (upstream.readyState === WebSocket.CONNECTING) {
+            if (pendingMessages.length >= MAX_PENDING_WS_MESSAGES) {
+                pendingMessages.shift();
+            }
+            pendingMessages.push(data);
+        }
+    };
 
     return upstream;
 }
@@ -224,9 +243,7 @@ export function startMobileTunnel({ localBaseUrl }) {
 
             if (payload.type === 'ws-message') {
                 const upstream = upstreamSockets.get(payload.socketId);
-                if (upstream?.readyState === WebSocket.OPEN) {
-                    upstream.send(Buffer.from(payload.bodyBase64 || '', 'base64'));
-                }
+                upstream?.enqueueOrSend?.(Buffer.from(payload.bodyBase64 || '', 'base64'));
                 return;
             }
 
