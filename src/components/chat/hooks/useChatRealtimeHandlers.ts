@@ -227,6 +227,15 @@ export function useChatRealtimeHandlers({
       case 'session_created': {
         const newSessionId = msg.newSessionId;
         if (!newSessionId) break;
+        console.log('[SessionDebug][Realtime] session_created received', {
+          newSessionId,
+          messageSessionId: msg.sessionId || null,
+          currentSessionId,
+          selectedSessionId: selectedSession?.id || null,
+          activeViewSessionId,
+          provider: msg.provider || provider,
+          path: window.location.pathname,
+        });
 
         if (!currentSessionId || currentSessionId.startsWith('new-session-')) {
           sessionStorage.setItem('pendingSessionId', newSessionId);
@@ -239,6 +248,11 @@ export function useChatRealtimeHandlers({
             prev.map((r) => (r.sessionId ? r : { ...r, sessionId: newSessionId })),
           );
         }
+        console.log('[SessionDebug][Realtime] navigating to session', {
+          newSessionId,
+          pathBeforeNavigate: window.location.pathname,
+        });
+        void window.refreshProjects?.();
         onNavigateToSession?.(newSessionId);
         break;
       }
@@ -273,16 +287,42 @@ export function useChatRealtimeHandlers({
 
         // Clear pending session
         const pendingSessionId = sessionStorage.getItem('pendingSessionId');
+        if (msg.actualSessionId && msg.actualSessionId !== currentSessionId) {
+          const previousSessionId = currentSessionId || pendingSessionId || sid || null;
+          console.log('[SessionDebug][Realtime] complete remapping session to actual id', {
+            previousSessionId,
+            actualSessionId: msg.actualSessionId,
+            messageSessionId: msg.sessionId || null,
+            selectedSessionId: selectedSession?.id || null,
+            pathBeforeNavigate: window.location.pathname,
+          });
+          if (previousSessionId) {
+            onSessionInactive?.(previousSessionId);
+            onSessionNotProcessing?.(previousSessionId);
+          }
+          setCurrentSessionId(msg.actualSessionId);
+          onReplaceTemporarySession?.(msg.actualSessionId);
+          onNavigateToSession?.(msg.actualSessionId);
+          sessionStorage.removeItem('pendingSessionId');
+          window.setTimeout(() => window.refreshProjects?.(), 250);
+          break;
+        }
+
         if (pendingSessionId && !currentSessionId && msg.exitCode === 0) {
           const actualId = msg.actualSessionId || pendingSessionId;
+          console.log('[SessionDebug][Realtime] complete resolved pending session', {
+            pendingSessionId,
+            actualSessionId: msg.actualSessionId || null,
+            actualId,
+            currentSessionId,
+            selectedSessionId: selectedSession?.id || null,
+          });
           setCurrentSessionId(actualId);
           if (msg.actualSessionId) {
             onNavigateToSession?.(actualId);
           }
           sessionStorage.removeItem('pendingSessionId');
-          if (window.refreshProjects) {
-            setTimeout(() => window.refreshProjects?.(), 500);
-          }
+          window.setTimeout(() => window.refreshProjects?.(), 500);
         }
         break;
       }

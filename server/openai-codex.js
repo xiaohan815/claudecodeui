@@ -232,6 +232,13 @@ export async function queryCodex(command, options = {}, ws) {
 
     // Get the thread ID
     currentSessionId = thread.id || sessionId || `codex-${Date.now()}`;
+    console.log('[SessionDebug][Codex] resolved session id before runStreamed:', {
+      providedSessionId: sessionId || null,
+      threadId: thread.id || null,
+      currentSessionId,
+      isNewSession: !sessionId,
+      projectPath: projectPath || cwd || null,
+    });
 
     // Track the session
     activeCodexSessions.set(currentSessionId, {
@@ -243,6 +250,10 @@ export async function queryCodex(command, options = {}, ws) {
     });
 
     // Send session created event
+    console.log('[SessionDebug][Codex] sending session_created:', {
+      newSessionId: currentSessionId,
+      sessionId: currentSessionId,
+    });
     sendMessage(ws, createNormalizedMessage({ kind: 'session_created', newSessionId: currentSessionId, sessionId: currentSessionId, provider: 'codex' }));
 
     // Execute with streaming
@@ -289,6 +300,10 @@ export async function queryCodex(command, options = {}, ws) {
 
     // Send completion event
     if (!terminalFailure) {
+      console.log('[SessionDebug][Codex] sending complete:', {
+        currentSessionId,
+        actualSessionId: thread.id || null,
+      });
       sendMessage(ws, createNormalizedMessage({ kind: 'complete', actualSessionId: thread.id, sessionId: currentSessionId, provider: 'codex' }));
       notifyRunStopped({
         userId: ws?.userId || null,

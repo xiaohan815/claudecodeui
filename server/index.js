@@ -1515,6 +1515,12 @@ function handleChatConnection(ws, request) {
                 console.log('📁 Project:', data.options?.projectPath || data.options?.cwd || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
+                console.log('[SessionDebug][Server] received codex-command:', {
+                    sessionId: data.options?.sessionId || null,
+                    projectPath: data.options?.projectPath || data.options?.cwd || null,
+                    model: data.options?.model || null,
+                    commandPreview: typeof data.command === 'string' ? data.command.slice(0, 80) : null,
+                });
                 await queryCodex(data.command, data.options, writer);
             } else if (data.type === 'gemini-command') {
                 console.log('[DEBUG] Gemini message:', data.command || '[Continue/Resume]');

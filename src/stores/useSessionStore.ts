@@ -136,6 +136,62 @@ const STALE_THRESHOLD_MS = 30_000;
 
 const MAX_REALTIME_MESSAGES = 500;
 
+function normalizeComparableText(value: string | undefined): string {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function isOptimisticUserEchoDuplicate(
+  serverMessage: NormalizedMessage,
+  realtimeMessage: NormalizedMessage,
+): boolean {
+  if (!realtimeMessage.id.startsWith('local_')) {
+    return false;
+  }
+
+  if (serverMessage.kind !== 'text' || realtimeMessage.kind !== 'text') {
+    return false;
+  }
+
+  if (serverMessage.role !== 'user' || realtimeMessage.role !== 'user') {
+    return false;
+  }
+
+  if (normalizeComparableText(serverMessage.content) !== normalizeComparableText(realtimeMessage.content)) {
+    return false;
+  }
+
+  const serverTime = new Date(serverMessage.timestamp).getTime();
+  const realtimeTime = new Date(realtimeMessage.timestamp).getTime();
+  if (!Number.isFinite(serverTime) || !Number.isFinite(realtimeTime)) {
+    return false;
+  }
+
+  return Math.abs(serverTime - realtimeTime) <= 60_000;
+}
+
+function pruneOptimisticDuplicates(
+  serverMessages: NormalizedMessage[],
+  realtimeMessages: NormalizedMessage[],
+): NormalizedMessage[] {
+  if (serverMessages.length === 0 || realtimeMessages.length === 0) {
+    return realtimeMessages;
+  }
+
+  return realtimeMessages.filter((realtimeMessage) => {
+    const isDuplicate = serverMessages.some((serverMessage) =>
+      isOptimisticUserEchoDuplicate(serverMessage, realtimeMessage),
+    );
+    if (isDuplicate) {
+      console.log('[SessionDebug][Store] pruned optimistic duplicate user message', {
+        realtimeMessageId: realtimeMessage.id,
+        sessionId: realtimeMessage.sessionId,
+        contentPreview: normalizeComparableText(realtimeMessage.content).slice(0, 80),
+      });
+    }
+    return !isDuplicate;
+  });
+}
+
 // ─── Hook ────────────────────────────────────────────────────────────────────
 
 export function useSessionStore() {
@@ -202,6 +258,7 @@ export function useSessionStore() {
       const messages: NormalizedMessage[] = data.messages || [];
 
       slot.serverMessages = messages;
+      slot.realtimeMessages = pruneOptimisticDuplicates(messages, slot.realtimeMessages);
       slot.total = data.total ?? messages.length;
       slot.hasMore = Boolean(data.hasMore);
       slot.offset = (opts.offset ?? 0) + messages.length;
@@ -326,8 +383,7 @@ export function useSessionStore() {
       slot.total = data.total ?? slot.serverMessages.length;
       slot.hasMore = Boolean(data.hasMore);
       slot.fetchedAt = Date.now();
-      // drop realtime messages that the server has caught up with to prevent unbounded growth.
-      slot.realtimeMessages = [];
+      slot.realtimeMessages = pruneOptimisticDuplicates(slot.serverMessages, slot.realtimeMessages);
       recomputeMergedIfNeeded(slot);
       notify(sessionId);
     } catch (error) {

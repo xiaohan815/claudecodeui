@@ -290,7 +290,20 @@ export function useProjectsState({
     );
 
     if (!updatedSelectedSession) {
-      setSelectedSession(null);
+      const selectedSessionRecord = selectedSession as Record<string, unknown>;
+      if (!selectedSessionRecord.__placeholder) {
+        setSelectedSession(null);
+      }
+      return;
+    }
+
+    const normalizedUpdatedSelectedSession =
+      selectedSession.__provider && !updatedSelectedSession.__provider
+        ? { ...updatedSelectedSession, __provider: selectedSession.__provider }
+        : updatedSelectedSession;
+
+    if (serialize(normalizedUpdatedSelectedSession) !== serialize(selectedSession)) {
+      setSelectedSession(normalizedUpdatedSelectedSession);
     }
   }, [latestMessage, selectedProject, selectedSession, activeSessions, projects]);
 
@@ -367,6 +380,33 @@ export function useProjectsState({
           setSelectedSession({ ...geminiSession, __provider: 'gemini' });
         }
         return;
+      }
+    }
+
+    if (selectedProject) {
+      const fallbackProvider =
+        (selectedSession?.id === sessionId && selectedSession.__provider) ||
+        (localStorage.getItem('selected-provider') as ProjectSession['__provider']) ||
+        'claude';
+
+      const shouldCreatePlaceholder =
+        selectedSession?.id !== sessionId || !(selectedSession as Record<string, unknown> | null)?.__placeholder;
+
+      if (shouldCreatePlaceholder) {
+        console.log('[SessionDebug][Projects] creating placeholder selectedSession', {
+          routeSessionId: sessionId,
+          selectedProjectName: selectedProject.name,
+          selectedSessionId: selectedSession?.id || null,
+          fallbackProvider,
+          projectsCount: projects.length,
+          path: window.location.pathname,
+        });
+        setSelectedSession({
+          id: sessionId,
+          summary: 'New Session',
+          __provider: fallbackProvider,
+          __placeholder: true,
+        } as ProjectSession);
       }
     }
   }, [sessionId, projects, selectedProject?.name, selectedSession?.id, selectedSession?.__provider]);
