@@ -227,7 +227,7 @@ const app = express();
 const server = http.createServer(app);
 
 const ptySessionsMap = new Map();
-const PTY_SESSION_TIMEOUT = 30 * 60 * 1000;
+const PTY_SESSION_TIMEOUT = 7 * 24 * 60 * 60 * 1000;
 const SHELL_URL_PARSE_BUFFER_LIMIT = 32768;
 const ANSI_ESCAPE_SEQUENCE_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
 const TRAILING_URL_PUNCTUATION_REGEX = /[)\]}>.,;:!?]+$/;
@@ -1993,7 +1993,7 @@ function handleShellConnection(ws) {
         if (ptySessionKey) {
             const session = ptySessionsMap.get(ptySessionKey);
             if (session) {
-                console.log('⏳ PTY session kept alive, will timeout in 30 minutes:', ptySessionKey);
+                console.log('⏳ PTY session kept alive, will timeout in 7 days:', ptySessionKey);
                 session.ws = null;
 
                 session.timeoutId = setTimeout(() => {
