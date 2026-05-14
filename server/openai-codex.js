@@ -327,6 +327,7 @@ export async function queryCodex(command, options = {}, ws) {
     if (!wasAborted) {
       console.error('[Codex] Error:', error);
       sendMessage(ws, createNormalizedMessage({ kind: 'error', content: error.message, sessionId: currentSessionId, provider: 'codex' }));
+      sendMessage(ws, createNormalizedMessage({ kind: 'complete', exitCode: 1, success: false, sessionId: currentSessionId, provider: 'codex' }));
       if (!terminalFailure) {
         notifyRunFailed({
           userId: ws?.userId || null,
@@ -336,6 +337,8 @@ export async function queryCodex(command, options = {}, ws) {
           error
         });
       }
+    } else {
+      sendMessage(ws, createNormalizedMessage({ kind: 'complete', exitCode: 1, aborted: true, success: false, sessionId: currentSessionId, provider: 'codex' }));
     }
 
   } finally {

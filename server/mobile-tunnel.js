@@ -61,7 +61,7 @@ function createLocalFetchUrl(localBaseUrl, requestPath) {
     return url.toString();
 }
 
-async function handleHttpRequest(ws, localBaseUrl, payload) {
+async function handleHttpRequest(ws, localBaseUrl, payload, context) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), HTTP_REQUEST_TIMEOUT_MS);
 
@@ -73,7 +73,8 @@ async function handleHttpRequest(ws, localBaseUrl, payload) {
         delete headers['accept-encoding'];
 
         const body = payload.bodyBase64 ? Buffer.from(payload.bodyBase64, 'base64') : undefined;
-        const response = await fetch(createLocalFetchUrl(localBaseUrl, payload.path), {
+        const fetchUrl = createLocalFetchUrl(localBaseUrl, payload.path);
+        const response = await fetch(fetchUrl, {
             method: payload.method || 'GET',
             headers,
             body: payload.method === 'GET' || payload.method === 'HEAD' ? undefined : body,
@@ -89,6 +90,7 @@ async function handleHttpRequest(ws, localBaseUrl, payload) {
 
         ws.send(JSON.stringify({
             type: 'http-response',
+            serverId: context.serverId,
             requestId: payload.requestId,
             status: response.status,
             headers: responseHeaders,
@@ -111,8 +113,17 @@ function createLocalWebSocket(localBaseUrl, socketId, requestPath, tunnelWs) {
     const targetUrl = new URL(requestPath || '/ws', base);
     const upstream = new WebSocket(targetUrl);
     const pendingMessages = [];
+    const stats = {
+        browserMessages: 0,
+        upstreamMessages: 0,
+        startedAt: Date.now(),
+    };
 
     upstream.on('open', () => {
+        console.log('[MobileTunnel] local ws opened', {
+            socketId,
+            path: requestPath,
+        });
         tunnelWs.send(JSON.stringify({ type: 'ws-open', socketId }));
         while (pendingMessages.length > 0 && upstream.readyState === WebSocket.OPEN) {
             upstream.send(pendingMessages.shift());
@@ -120,6 +131,14 @@ function createLocalWebSocket(localBaseUrl, socketId, requestPath, tunnelWs) {
     });
 
     upstream.on('message', (data) => {
+        stats.upstreamMessages += 1;
+        if (stats.upstreamMessages === 1) {
+            console.log('[MobileTunnel] local ws first upstream message', {
+                socketId,
+                path: requestPath,
+                bytes: Buffer.from(data).length,
+            });
+        }
         tunnelWs.send(JSON.stringify({
             type: 'ws-message',
             socketId,
@@ -128,6 +147,13 @@ function createLocalWebSocket(localBaseUrl, socketId, requestPath, tunnelWs) {
     });
 
     upstream.on('close', () => {
+        console.log('[MobileTunnel] local ws closed', {
+            socketId,
+            path: requestPath,
+            durationMs: Date.now() - stats.startedAt,
+            browserMessages: stats.browserMessages,
+            upstreamMessages: stats.upstreamMessages,
+        });
         tunnelWs.send(JSON.stringify({ type: 'ws-close', socketId }));
     });
 
@@ -140,6 +166,14 @@ function createLocalWebSocket(localBaseUrl, socketId, requestPath, tunnelWs) {
     });
 
     upstream.enqueueOrSend = (data) => {
+        stats.browserMessages += 1;
+        if (stats.browserMessages === 1) {
+            console.log('[MobileTunnel] local ws first browser message', {
+                socketId,
+                path: requestPath,
+                bytes: Buffer.from(data).length,
+            });
+        }
         if (upstream.readyState === WebSocket.OPEN) {
             upstream.send(data);
             return;
@@ -213,7 +247,9 @@ export function startMobileTunnel({ localBaseUrl }) {
                 serverId,
                 serverName,
                 localBaseUrl: normalizedLocalBaseUrl,
-                ...clientInfo,
+                hostname: clientInfo.hostname,
+                platform: clientInfo.platform,
+                cwd: clientInfo.cwd,
             });
             ws.send(JSON.stringify({
                 type: 'register',
@@ -250,11 +286,39 @@ export function startMobileTunnel({ localBaseUrl }) {
             }
 
             if (payload.type === 'http-request') {
-                void handleHttpRequest(ws, normalizedLocalBaseUrl, payload);
+                if (payload.serverId && payload.serverId !== serverId) {
+                    console.warn('[MobileTunnel] Ignoring request for mismatched server id', {
+                        expected: serverId,
+                        received: payload.serverId,
+                        requestId: payload.requestId,
+                        path: payload.path,
+                    });
+                    ws.send(JSON.stringify({
+                        type: 'http-error',
+                        requestId: payload.requestId,
+                        error: `Tunnel server id mismatch: expected ${serverId}, received ${payload.serverId}`,
+                    }));
+                    return;
+                }
+                void handleHttpRequest(ws, normalizedLocalBaseUrl, payload, { serverId, serverName });
                 return;
             }
 
             if (payload.type === 'ws-connect') {
+                if (payload.serverId && payload.serverId !== serverId) {
+                    console.warn('[MobileTunnel] Ignoring websocket for mismatched server id', {
+                        expected: serverId,
+                        received: payload.serverId,
+                        socketId: payload.socketId,
+                        path: payload.path,
+                    });
+                    ws.send(JSON.stringify({
+                        type: 'ws-error',
+                        socketId: payload.socketId,
+                        error: `Tunnel server id mismatch: expected ${serverId}, received ${payload.serverId}`,
+                    }));
+                    return;
+                }
                 const upstream = createLocalWebSocket(normalizedLocalBaseUrl, payload.socketId, payload.path, ws);
                 upstreamSockets.set(payload.socketId, upstream);
                 return;
